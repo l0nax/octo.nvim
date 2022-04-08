@@ -3,6 +3,7 @@ local date = require "octo.date"
 local gh = require "octo.gh"
 local graphql = require "octo.graphql"
 local config = require "octo.config"
+local host = require "octo.host.provider"
 local _, Job = pcall(require, "plenary.job")
 
 local M = {}
@@ -141,6 +142,44 @@ function M.is_blank(s)
   return not (s ~= nil and s ~= vim.NIL and string.match(s, "%S") ~= nil)
 end
 
+-- Return: Repository
+function M.get_repository()
+  local conf = config.get_config()
+  local candidates = conf.default_remote
+  local repo = {}
+
+  for _, candidate in ipairs(candidates) do
+    local job = Job:new {
+      command = "git",
+      args = { "remote", "get-url", candidate },
+    }
+    job:sync()
+
+    local url = table.concat(job:result(), "\n")
+    local stderr = table.concat(job:stderr_result(), "\n")
+
+    if M.is_blank(stderr) then
+      if #vim.split(url, "://") == 2 then
+        local hostname, owner, name = string.match(url, '%a+://([^/]+)/(.+)/(.+)')
+        name = string.gsub(name, ".git$", "")
+
+        repo.hostname = hostname
+        repo.owner = owner
+        repo.name = name
+      elseif #vim.split(url, "@") == 2 then
+        -- TODO: GitLab does currently not support suchs URIs
+        local segment = vim.split(url, ":")[2]
+        repo.hostname = "github.com" -- TODO: Defaulting to GitHub
+        repo.owner = vim.split(segment, "/")[1]
+        repo.name = string.gsub(vim.split(segment, "/")[2], ".git$", "")
+      end
+
+      repo.full_path = string.format("%s/%s", repo.owner, repo.name)
+      return repo
+    end
+  end
+end
+
 function M.get_remote_name()
   local conf = config.get_config()
   local candidates = conf.default_remote
@@ -157,12 +196,15 @@ function M.get_remote_name()
     if M.is_blank(stderr) then
       local owner, name
       if #vim.split(url, "://") == 2 then
-        _, owner, name = string.match(url, '%a+://([^/]+)/([^/]+)/(.+)')
+        hostname, owner, name = string.match(url, '%a+://([^/]+)/([^/]+)/(.+)')
         name = string.gsub(name, ".git$", "")
+        print(hostname)
+        host:set_provider(hostname)
       elseif #vim.split(url, "@") == 2 then
         local segment = vim.split(url, ":")[2]
         owner = vim.split(segment, "/")[1]
         name = string.gsub(vim.split(segment, "/")[2], ".git$", "")
+        -- TODO: Find hostname
       end
       return string.format("%s/%s", owner, name)
     end
@@ -553,6 +595,10 @@ end
 --- Get the URI for a repository
 function M.get_repo_uri(_, repo)
   return string.format("octo://%s/repo", repo)
+end
+
+function M.get_issue_obj_uri(issue)
+  return string.format("octo://%s/issue/%s", issue.repo.full_path, toString(issue.id))
 end
 
 --- Get the URI for an issue

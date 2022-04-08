@@ -12,6 +12,7 @@ local navigation = require "octo.navigation"
 local graphql = require "octo.graphql"
 local previewers = require "octo.pickers.telescope.previewers"
 local entry_maker = require "octo.pickers.telescope.entry_maker"
+local host = require "octo.host.provider"
 
 local M = {}
 
@@ -128,6 +129,7 @@ function dump(o)
       return tostring(o)
    end
 end
+
 --
 -- ISSUES
 --
@@ -139,64 +141,80 @@ function M.issues(opts)
   else
     opts.state = opts.states
   end
-  local filter = get_filter(opts, "issue")
 
   if not opts.repo or opts.repo == vim.NIL then
-    opts.repo = utils.get_remote_name()
+    opts.repo = utils.get_repository()
   end
   if not opts.repo then
     utils.notify("Cannot find repo", 2)
     return
   end
 
-  local query = graphql("issues_query", opts.repo, filter, { escape = false })
-  print "Fetching issues (this may take a while) SUPER ..."
-  print(query)
+  local filter = host.util:get_filter(opts, "issue")
 
-  gh.run {
-    args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
+  host:list_issues {
+    repo = opts.repo,
     cb = function(output, stderr)
       print " "
       if stderr and not utils.is_blank(stderr) then
         utils.notify(stderr, 2)
-      elseif output then
-        local resp = utils.aggregate_pages(output, "data.project.issues.nodes")
-        local issues = resp.data.project.issues.nodes
-        if #issues == 0 then
-          utils.notify(string.format("There are no matching issues in %s.", opts.repo), 2)
-          return
-        end
-        local max_number = -1
-        for i, issue in ipairs(issues) do
-          if #tostring(issue.iid) > max_number then
-            max_number = #tostring(issue.iid)
-          end
-
-          issues[i].repository = {}
-          issues[i].repository.nameWithOwner = opts.repo
-        end
-        opts.preview_title = opts.preview_title or ""
-        opts.prompt_title = opts.prompt_title or ""
-        opts.results_title = opts.results_title or ""
-        pickers.new(opts, {
-          finder = finders.new_table {
-            results = issues,
-            entry_maker = entry_maker.gen_from_issue(max_number),
-          },
-          sorter = conf.generic_sorter(opts),
-          previewer = previewers.issue.new(opts),
-          attach_mappings = function(_, map)
-            action_set.select:replace(function(prompt_bufnr, type)
-              open(type)(prompt_bufnr)
-            end)
-            map("i", "<c-b>", open_in_browser())
-            map("i", "<c-y>", copy_url())
-            return true
-          end,
-        }):find()
+        return
+      elseif not output then
+        return
       end
-    end,
+
+      local issues = host:process_issues(opts, output)
+      pickers.new(opts, {
+        finder = finders.new_table {
+          results = issues,
+          entry_maker = entry_maker.gen_from_issue(max_number),
+        },
+        sorter = conf.generic_sorter(opts),
+        previewer = previewers.issue.new(opts),
+        attach_mappings = function(_, map)
+          action_set.select:replace(function(prompt_bufnr, type)
+            open(type)(prompt_bufnr)
+          end)
+          map("i", "<c-b>", open_in_browser())
+          map("i", "<c-y>", copy_url())
+          return true
+        end,
+      }):find()
+    end
   }
+
+  -- local query = graphql("issues_query", opts.repo, filter, { escape = false })
+  -- print "Fetching issues (this may take a while) SUPER ..."
+  -- print(query)
+
+  -- gh.run {
+  --   args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
+  --   cb = function(output, stderr)
+  --     print " "
+  --     if stderr and not utils.is_blank(stderr) then
+  --       utils.notify(stderr, 2)
+  --     elseif output then
+
+
+  --       pickers.new(opts, {
+  --         finder = finders.new_table {
+  --           results = issues,
+  --           entry_maker = entry_maker.gen_from_issue(max_number),
+  --         },
+  --         sorter = conf.generic_sorter(opts),
+  --         previewer = previewers.issue.new(opts),
+  --         attach_mappings = function(_, map)
+  --           action_set.select:replace(function(prompt_bufnr, type)
+  --             open(type)(prompt_bufnr)
+  --           end)
+  --           map("i", "<c-b>", open_in_browser())
+  --           map("i", "<c-y>", copy_url())
+  --           return true
+  --         end,
+  --       }):find()
+  --     end
+  --   end,
+  -- }
 end
 
 --
