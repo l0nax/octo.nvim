@@ -12,7 +12,55 @@
 
 
 
+ TimelineItemType = {}
+
+
+
+
+
+
+
+
+ TimelineItem = {}
+
+
+
+
+
+
+
+ LabelEvent = {}
+
+
+
+
+
+ IssueCommentEvent = {}
+
+
+
+
+
+
+
+
+
+
+ StateChangeEvent = {}
+
+
+
+
+ AssignedEvent = {}
+
+
+
+
+
  Issue = {}
+
+
+
 
 
 

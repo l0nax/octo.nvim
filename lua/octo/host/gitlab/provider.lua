@@ -65,6 +65,7 @@ local GitLabIssueQuery = {Data = {Project = {GitLabIssue = {UserPermission = {},
 
 
 
+
 local M = {
    util = {},
 }
@@ -124,6 +125,7 @@ function M:get_issue(repo, number, cb)
          issue.viewerCanUpdate = obj.userPermissions.updateIssue or obj.userPermissions.adminIssue
          issue.state = obj.state
          issue.reactionGroups = {}
+         issue.url = obj.webUrl
 
          issue.assignees = {}
          if obj.assignees and #obj.assignees.nodes > 0 then
@@ -185,18 +187,21 @@ function M.util:get_filter(opts, kind)
    local allowed_values = {}
    local map = {}
    if kind == "issue" then
-      allowed_values = { "createdAfter", "author", "assignee", "labels", "milestone", "state" }
+      allowed_values = { "createdAfter", "author", "assignee", "labels", "milestone", "states" }
       map = {
          ["assignee"] = { "assigneeUsernames", "string_array" },
          ["assignees"] = { "assigneeUsernames", "string_array" },
          ["labels"] = { "labelName", "string_array" },
          ["author"] = { "authorUsername", "string" },
          ["milestone"] = { "milestoneTitle", "string" },
+         ["states"] = { "state", "string" },
       }
    elseif kind == "pull_request" then
 
       allowed_values = { "baseRefName", "headRefName", "labels", "states" }
    end
+
+   local hasStateFilter = false
 
    for _, value in ipairs(allowed_values) do
       if opts[value] then
@@ -209,6 +214,9 @@ function M.util:get_filter(opts, kind)
             val = opts[value]
          end
 
+         if value == "state" or value == "states" then
+            hasStateFilter = true
+         end
          if map[value] then
             local target = map[value]
             value = target[1]
@@ -219,6 +227,7 @@ function M.util:get_filter(opts, kind)
          end
          val = vim.fn.json_encode(val)
          val = string.gsub(val, '"all"', "all")
+         val = string.gsub(val, '"OPEN"', "opened")
          val = string.gsub(val, '"opened"', "opened")
          val = string.gsub(val, '"closed"', "closed")
          val = string.gsub(val, '"locked"', "locked")
@@ -227,7 +236,7 @@ function M.util:get_filter(opts, kind)
       end
    end
 
-   if not opts["state"] then
+   if not hasStateFilter then
       filter = filter .. "state:opened,"
    end
 

@@ -26,12 +26,11 @@ local dropdown_opts = require("telescope.themes").get_dropdown {
   previewer = false,
 }
 
---- XXX: Rework this function!!!
 local function get_filter(opts, kind)
   local filter = ""
   local allowed_values = {}
   if kind == "issue" then
-    allowed_values = { "since", "createdBy", "assignee", "mentioned", "labels", "milestone", "state" }
+    allowed_values = { "since", "createdBy", "assignee", "mentioned", "labels", "milestone", "states" }
   elseif kind == "pull_request" then
     allowed_values = { "baseRefName", "headRefName", "labels", "states" }
   end
@@ -47,10 +46,9 @@ local function get_filter(opts, kind)
         val = opts[value]
       end
       val = vim.fn.json_encode(val)
-      val = string.gsub(val, '"all"', "all")
-      val = string.gsub(val, '"opened"', "opened")
-      val = string.gsub(val, '"closed"', "closed")
-      val = string.gsub(val, '"locked"', "locked")
+      val = string.gsub(val, '"OPEN"', "OPEN")
+      val = string.gsub(val, '"CLOSED"', "CLOSED")
+      val = string.gsub(val, '"MERGED"', "MERGED")
       filter = filter .. value .. ":" .. val .. ","
     end
   end
@@ -130,9 +128,7 @@ end
 function M.issues(opts)
   opts = opts or {}
   if not opts.states then
-    opts.state = "opened"
-  else
-    opts.state = opts.states
+    opts.states = "OPEN"
   end
 
   if not opts.repo or opts.repo == vim.NIL or type(opts.repo) == 'string' then

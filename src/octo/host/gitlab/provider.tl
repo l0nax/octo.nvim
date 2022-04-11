@@ -37,6 +37,7 @@ local record GitLabIssueQuery
         updatedAt: string
         description: string
         state: IssueState
+        webUrl: string
 
         record UserPermission
           adminIssue: boolean
@@ -124,6 +125,7 @@ function M:get_issue(repo: Repository, number: integer,  cb: function(issue: Iss
       issue.viewerCanUpdate = obj.userPermissions.updateIssue or obj.userPermissions.adminIssue
       issue.state = obj.state
       issue.reactionGroups = {}
+      issue.url = obj.webUrl
 
       issue.assignees = {}
       if obj.assignees and #obj.assignees.nodes > 0 then
@@ -185,18 +187,21 @@ function M.util:get_filter(opts: {string:string}, kind: OctoKind): string
   local allowed_values = {}
   local map: {string:{string,convTarget}} = {} -- for convenience, we auto. convert some filters
   if kind == "issue" then
-    allowed_values = { "createdAfter", "author", "assignee", "labels", "milestone", "state" }
+    allowed_values = { "createdAfter", "author", "assignee", "labels", "milestone", "states" }
     map = {
       ["assignee"] = {"assigneeUsernames", "string_array"},
       ["assignees"] = {"assigneeUsernames", "string_array"},
       ["labels"] = {"labelName", "string_array"},
       ["author"] = {"authorUsername", "string"},
       ["milestone"] = {"milestoneTitle", "string"},
+      ["states"] = {"state", "string"},
     }
   elseif kind == "pull_request" then
     -- TODO: Update me
     allowed_values = { "baseRefName", "headRefName", "labels", "states" }
   end
+
+  local hasStateFilter: boolean = false
 
   for _, value in ipairs(allowed_values) do
     if opts[value] then
@@ -209,6 +214,9 @@ function M.util:get_filter(opts: {string:string}, kind: OctoKind): string
         val = opts[value]
       end
 
+      if value == "state" or value == "states" then
+        hasStateFilter = true
+      end
       if map[value] then
         local target: {string,convTarget} = map[value]
         value = target[1]
@@ -219,6 +227,7 @@ function M.util:get_filter(opts: {string:string}, kind: OctoKind): string
       end
       val = vim.fn.json_encode(val) as string
       val = string.gsub(val as string, '"all"', "all")
+      val = string.gsub(val as string, '"OPEN"', "opened")
       val = string.gsub(val as string, '"opened"', "opened")
       val = string.gsub(val as string, '"closed"', "closed")
       val = string.gsub(val as string, '"locked"', "locked")
@@ -227,7 +236,7 @@ function M.util:get_filter(opts: {string:string}, kind: OctoKind): string
     end
   end
 
-  if not opts["state"] then
+  if not hasStateFilter then
     filter = filter .. "state:opened,"
   end
 

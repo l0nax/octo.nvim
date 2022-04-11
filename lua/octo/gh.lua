@@ -4,6 +4,10 @@ local _, Job = pcall(require, "plenary.job")
 local M = {}
 
 local headers = {
+  "application/vnd.github.v3+json",
+  "application/vnd.github.squirrel-girl-preview+json",
+  "application/vnd.github.comfort-fade-preview+json",
+  "application/vnd.github.bane-preview+json",
 }
 
 local env_vars = {
@@ -25,7 +29,7 @@ local env_vars = {
 function M.get_user_name()
   local job = Job:new {
     enable_recording = true,
-    command = "glab",
+    command = "gh",
     args = { "auth", "status" },
     env = env_vars,
   }
@@ -37,19 +41,6 @@ function M.get_user_name()
   else
     require("octo.utils").notify(stderr, 2)
   end
-end
-
-function dump(o)
-   if type(o) == 'table' then
-      local s = '{ '
-      for k,v in pairs(o) do
-         if type(k) ~= 'number' then k = '"'..k..'"' end
-         s = s .. '['..k..'] = ' .. dump(v) .. ','
-      end
-      return s .. '} '
-   else
-      return tostring(o)
-   end
 end
 
 function M.run(opts)
@@ -66,8 +57,8 @@ function M.run(opts)
   local conf = config.get_config()
   local mode = opts.mode or "async"
   if opts.args[1] == "api" then
-    -- table.insert(opts.args, "-H")
-    -- table.insert(opts.args, "Accept: " .. table.concat(headers, ";"))
+    table.insert(opts.args, "-H")
+    table.insert(opts.args, "Accept: " .. table.concat(headers, ";"))
     if not require("octo.utils").is_blank(conf.github_hostname) then
       table.insert(opts.args, "--hostname")
       table.insert(opts.args, conf.github_hostname)
@@ -81,11 +72,9 @@ function M.run(opts)
     end
   end
 
-  -- print("Args: ", dump(opts.args))
-
   local job = Job:new {
     enable_recording = true,
-    command = "glab",
+    command = "gh",
     args = opts.args,
     on_exit = vim.schedule_wrap(function(j_self, _, _)
       if mode == "async" and opts.cb then

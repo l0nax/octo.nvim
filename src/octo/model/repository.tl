@@ -12,6 +12,51 @@ global type Repository = record
   id: integer
 end
 
+global type TimelineItemType = enum
+  "LabeledEvent" -- Resolves to 'LabelEvent'
+  "UnlabeledEvent" -- Resolves to 'LabelEvent'
+  "IssueComment"
+  "ClosedEvent"
+  "ReopenedEvent"
+  "AssignedEvent"
+end
+
+global type TimelineItem = record
+  __typename: string
+
+  itemType: TimelineItemType
+
+  data: any
+end
+
+global type LabelEvent = record
+  actor: User
+  createdAt: string
+  label: Label
+end
+
+global type IssueCommentEvent = record
+  id: integer
+  body: string
+  createdAt: string
+  reactionGroups: {ReactionGroup}
+  actor: User
+  viewerDidAuthor: boolean
+  viewerCanUpdate: boolean
+  viewerCanDelete: boolean
+end
+
+global type StateChangeEvent = record
+  createdAt: string
+  actor: string
+end
+
+global type AssignedEvent = record
+  createdAt: string
+  actor: User
+  assignee: any -- TODO: Discuss how to handle
+end
+
 global type Issue = record
   __typename: string
 
@@ -30,8 +75,11 @@ global type Issue = record
   description: string
   state: IssueState
   assignees: {User}
+  participants: {User}
   labels: {Label}
   reactionGroups: {ReactionGroup}
+  url: string -- Is the Web URL
+  timelineItems: {TimelineItem}
 
   viewerDidAuthor: boolean
   viewerCanUpdate: boolean
