@@ -24,11 +24,13 @@ function M:set_provider(hostname)
 end
 
 function M:list_issues(repo, filter, cb)
-   print(repo)
    M:set_provider(repo.hostname)
    provider:list_issues(repo, filter, cb)
 end
 
+function M:get_issue(repo, number, cb)
+   provider:get_issue(repo, number, cb)
+end
 
 function M:get_user_name()
    return provider:get_user_name()

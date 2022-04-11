@@ -24,12 +24,14 @@ function M:set_provider(hostname: string)
 end
 
 function M:list_issues(repo: Repository, filter: string, cb: function(output: string, stderr: string))
-  print(repo)
   M:set_provider(repo.hostname)
   provider:list_issues(repo, filter, cb)
 end
 
--- TODO: This may cause problems!
+function M:get_issue(repo: Repository, number: integer,  cb: function(issue: Issue, stderr: string))
+  provider:get_issue(repo, number, cb)
+end
+
 function M:get_user_name(): string
   return provider:get_user_name()
 end

@@ -124,25 +124,11 @@ local function copy_url()
   end
 end
 
-function dump(o)
-   if type(o) == 'table' then
-      local s = '{ '
-      for k,v in pairs(o) do
-         if type(k) ~= 'number' then k = '"'..k..'"' end
-         s = s .. '['..k..'] = ' .. dump(v) .. ','
-      end
-      return s .. '} '
-   else
-      return tostring(o)
-   end
-end
-
 --
 -- ISSUES
 --
 function M.issues(opts)
   opts = opts or {}
-  -- TODO: We HAVE TO use teal or at least abstract this!!
   if not opts.states then
     opts.state = "opened"
   else
@@ -160,7 +146,7 @@ function M.issues(opts)
   local filter = host.util:get_filter(opts, "issue")
   host:list_issues(
     opts.repo,
-    nil,
+    filter,
     function(output, stderr)
       print " "
       if stderr and not utils.is_blank(stderr) then
@@ -171,7 +157,6 @@ function M.issues(opts)
       end
 
       local issues, max_number = host:process_issues(opts, output)
-      print(dump(issues))
       pickers.new(opts, {
         finder = finders.new_table {
           results = issues,

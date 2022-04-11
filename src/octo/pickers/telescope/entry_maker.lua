@@ -63,7 +63,7 @@ function M.gen_from_issue(max_number, print_repo)
       ordinal = obj.id .. " " .. obj.title,
       display = make_display,
       obj = obj,
-      repo = obj.repo.full_path,
+      repo = obj.repo,
     }
   end
 end

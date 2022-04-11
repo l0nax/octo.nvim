@@ -4,19 +4,6 @@ local utils = require "octo.utils"
 
 local M = {}
 
-function dump(o)
-   if type(o) == 'table' then
-      local s = '{ '
-      for k,v in pairs(o) do
-         if type(k) ~= 'number' then k = '"'..k..'"' end
-         s = s .. '['..k..'] = ' .. dump(v) .. ','
-      end
-      return s .. '} '
-   else
-      return tostring(o)
-   end
-end
-
 function M.gen_from_issue(max_number, print_repo)
   local make_display = function(entry)
     if not entry then
@@ -69,7 +56,6 @@ function M.gen_from_issue(max_number, print_repo)
       filename = "PULL_REQUEST"
       -- filename = utils.get_pull_request_uri(obj.repository.nameWithOwner, obj.iid) -- TODO: Refactor me
     end
-    print(dump(obj))
     return {
       filename = filename,
       kind = kind,
@@ -77,7 +63,7 @@ function M.gen_from_issue(max_number, print_repo)
       ordinal = obj.id .. " " .. obj.title,
       display = make_display,
       obj = obj,
-      repo = obj.repo.full_path,
+      repo = obj.repo,
     }
   end
 end

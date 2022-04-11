@@ -35,6 +35,9 @@ M.state_hl_map = {
   PENDING = "OctoStatePending",
   REVIEW_REQUIRED = "OctoStatePending",
   SUBMITTED = "OctoStateSubmitted",
+
+  OPENED = "OctoStateOpen",
+  ACTIVE = "OctoStateActive",
 }
 
 M.state_icon_map = {
@@ -59,6 +62,9 @@ M.state_message_map = {
   DISMISSED = "Dismissed",
   PENDING = "Awaiting required review",
   REVIEW_REQUIRED = "Awaiting required review",
+
+  ACTIVE = "Open",
+  CLOSE = "Closed",
 }
 
 function M.calculate_strongest_review_state(states)

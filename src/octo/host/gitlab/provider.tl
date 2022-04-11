@@ -22,6 +22,49 @@ local record GitLabIssuesQuery
   data: Data
 end
 
+local record GitLabIssueQuery
+  record Data
+    record Project
+      record GitLabIssue
+        id: integer
+        iid: integer
+        title: string
+
+        author: User
+        milestone: Milestone
+        createdAt: string
+        closedAt: string
+        updatedAt: string
+        description: string
+        state: IssueState
+
+        record UserPermission
+          adminIssue: boolean
+          updateIssue: boolean
+        end
+        userPermissions: UserPermission
+
+        record UserNode
+          nodes: {User}
+        end
+        assignees: UserNode
+
+        record LabelNode
+          record GitLabLabel
+            textColor: string
+            title: string
+          end
+          nodes: {GitLabLabel}
+        end
+        labels: LabelNode
+      end
+      issue: GitLabIssue
+    end
+    project: Project
+  end
+  data: Data
+end
+
 local M: RepoHost = {
   util = {}
 }
@@ -30,8 +73,20 @@ function M:get_user_name(): string
   return glab.get_user_name()
 end
 
+-- function M:get_user(_: string): string
+--   -- local query = graphql.g("current_user")
+--   -- glab.run {
+--   --   hostname = hostname,
+--   --   args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
+--   --   cb = function(output: string, stderr: string)
+      
+--   --   end,
+--   -- }
+--   return ""
+-- end
+
 function M:list_issues(repo: Repository, filter: string, cb: function(output: string, stderr: string))
-  if not filter then
+  if filter == nil then
     filter = ""
   end
 
@@ -40,6 +95,54 @@ function M:list_issues(repo: Repository, filter: string, cb: function(output: st
     hostname = repo.hostname,
     args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
     cb = cb,
+  }
+end
+
+function M:get_issue(repo: Repository, number: integer,  cb: function(issue: Issue, stderr: string))
+  local query = graphql.g("issue_query", repo.full_path, number)
+  glab.run {
+    hostname = repo.hostname,
+    args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
+    cb = function(output: string, stderr: string)
+      if stderr and not utils.is_blank(stderr) then
+        cb(nil, stderr)
+        return
+      end
+
+      local result = vim.fn.json_decode(output) as GitLabIssueQuery
+      local obj = result.data.project.issue
+      local issue: Issue = {}
+
+      issue.title = obj.title
+      issue.author = obj.author
+      issue.milestone = obj.milestone
+      issue.createdAt = obj.createdAt
+      issue.updatedAt = obj.updatedAt
+      issue.closedAt = obj.closedAt
+      issue.description = obj.description
+      issue.viewerDidAuthor = false -- TODO: Implement me
+      issue.viewerCanUpdate = obj.userPermissions.updateIssue or obj.userPermissions.adminIssue
+      issue.state = obj.state
+      issue.reactionGroups = {}
+
+      issue.assignees = {}
+      if obj.assignees and #obj.assignees.nodes > 0 then
+        for i, assignee in ipairs(obj.assignees.nodes) do
+          issue.assignees[i] = assignee
+        end
+      end
+
+      issue.labels = {}
+      if obj.labels and #obj.labels.nodes > 0 then
+        for i, label in ipairs(obj.labels.nodes) do
+          issue.labels[i] = {}
+          issue.labels[i].color = label.textColor
+          issue.labels[i].name = label.title
+        end
+      end
+
+      cb(issue, stderr)
+    end,
   }
 end
 
@@ -122,6 +225,10 @@ function M.util:get_filter(opts: {string:string}, kind: OctoKind): string
 
       filter = filter .. value .. ":" .. (val as string) .. ","
     end
+  end
+
+  if not opts["state"] then
+    filter = filter .. "state:opened,"
   end
 
   return filter

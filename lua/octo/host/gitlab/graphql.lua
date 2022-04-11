@@ -22,6 +22,93 @@ query($endCursor: String) {
 }
 ]]
 
+-- https://docs.gitlab.com/ee/api/graphql/reference/#querycurrentuser
+M.current_user = [[
+query {
+  id
+  username
+  name
+}
+]]
+
+-- https://docs.gitlab.com/ee/api/graphql/reference/#queryproject
+M.issue_query = [[
+query($endCursor: String) {
+  project(fullPath: "%s") {
+    issue(iid: "%d") {
+      iid
+      state
+      title
+      description
+      createdAt
+      closedAt
+      updatedAt
+      webUrl
+      userPermissions {
+        adminIssue
+        updateIssue
+      }
+      author {
+        id
+        name
+        username
+      }
+      milestone {
+        title
+        state
+      }
+      participants(first: 10) {
+        nodes {
+          id
+          name
+          username
+        }
+      }
+      upvotes
+      downvotes
+      discussions(first: 100, after: $endCursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          notes(first: 100) {
+            nodes {
+              id
+              body
+              system
+              author {
+                id
+                name
+                username
+              }
+              userPermissions {
+                adminNote
+                repositionNote
+              }
+            }
+          }
+        }
+      }
+      labels(first: 20) {
+        nodes {
+          textColor
+          title
+        }
+      }
+      assignees(first: 20) {
+        nodes {
+          id
+          name
+          username
+        }
+      }
+    }
+  }
+}
+]]
+
 local function escape_chars(str)
   local escaped, _ = string.gsub(str, '["\\]', {
     ['"'] = '\\"',

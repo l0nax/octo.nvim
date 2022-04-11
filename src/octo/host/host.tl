@@ -8,13 +8,14 @@ local host = {}
 -- It can be used/ threated like a interface in other languages.
 global type RepoHost = record
   get_pull_request: function(): any
-  get_issue: function(): any
   get_repository: function(): any
 
   list_issues: function(self: RepoHost, repo: Repository, filter: string, cb: function(output: string, stderr: string))
 
   -- Processes issues from JSON input.
   process_issues: function(self: RepoHost, opts: ProcessIssuesOpts, output: string): {Issue}, integer
+
+  get_issue: function(self: RepoHost, repo: Repository, number: integer,  cb: function(issue: Issue, stderr: string))
 
   -- Has some utility functions to process or validate
   -- input specifc to a hosting provider.
@@ -24,7 +25,8 @@ global type RepoHost = record
   end
   util: Util
 
-  get_user_name: function(self: RepoHost): string
+  get_user_name: function(self: RepoHost, hostname: string): string
+  get_user: function(self: RepoHost): string
   set_provider: function(self: RepoHost, hostname: string)
 end
 

@@ -22,6 +22,49 @@ local GitLabIssuesQuery = {Data = {Project = {Node = {GitLabIssue = {}, }, }, },
 
 
 
+local GitLabIssueQuery = {Data = {Project = {GitLabIssue = {UserPermission = {}, UserNode = {}, LabelNode = {GitLabLabel = {}, }, }, }, }, }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 local M = {
    util = {},
 }
@@ -30,8 +73,20 @@ function M:get_user_name()
    return glab.get_user_name()
 end
 
+
+
+
+
+
+
+
+
+
+
+
+
 function M:list_issues(repo, filter, cb)
-   if not filter then
+   if filter == nil then
       filter = ""
    end
 
@@ -40,6 +95,54 @@ function M:list_issues(repo, filter, cb)
       hostname = repo.hostname,
       args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
       cb = cb,
+   })
+end
+
+function M:get_issue(repo, number, cb)
+   local query = graphql.g("issue_query", repo.full_path, number)
+   glab.run({
+      hostname = repo.hostname,
+      args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
+      cb = function(output, stderr)
+         if stderr and not utils.is_blank(stderr) then
+            cb(nil, stderr)
+            return
+         end
+
+         local result = vim.fn.json_decode(output)
+         local obj = result.data.project.issue
+         local issue = {}
+
+         issue.title = obj.title
+         issue.author = obj.author
+         issue.milestone = obj.milestone
+         issue.createdAt = obj.createdAt
+         issue.updatedAt = obj.updatedAt
+         issue.closedAt = obj.closedAt
+         issue.description = obj.description
+         issue.viewerDidAuthor = false
+         issue.viewerCanUpdate = obj.userPermissions.updateIssue or obj.userPermissions.adminIssue
+         issue.state = obj.state
+         issue.reactionGroups = {}
+
+         issue.assignees = {}
+         if obj.assignees and #obj.assignees.nodes > 0 then
+            for i, assignee in ipairs(obj.assignees.nodes) do
+               issue.assignees[i] = assignee
+            end
+         end
+
+         issue.labels = {}
+         if obj.labels and #obj.labels.nodes > 0 then
+            for i, label in ipairs(obj.labels.nodes) do
+               issue.labels[i] = {}
+               issue.labels[i].color = label.textColor
+               issue.labels[i].name = label.title
+            end
+         end
+
+         cb(issue, stderr)
+      end,
    })
 end
 
@@ -122,6 +225,10 @@ function M.util:get_filter(opts, kind)
 
          filter = filter .. value .. ":" .. (val) .. ","
       end
+   end
+
+   if not opts["state"] then
+      filter = filter .. "state:opened,"
    end
 
    return filter
