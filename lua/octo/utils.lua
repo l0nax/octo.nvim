@@ -3,7 +3,6 @@ local date = require "octo.date"
 local gh = require "octo.gh"
 local graphql = require "octo.graphql"
 local config = require "octo.config"
-local host = require "octo.host.provider"
 local _, Job = pcall(require, "plenary.job")
 
 local M = {}
@@ -180,7 +179,7 @@ function M.get_repository()
   end
 end
 
-function M.get_remote_name()
+function M.split_remote_url()
   local conf = config.get_config()
   local candidates = conf.default_remote
   for _, candidate in ipairs(candidates) do
@@ -194,21 +193,31 @@ function M.get_remote_name()
     local stderr = table.concat(job:stderr_result(), "\n")
 
     if M.is_blank(stderr) then
-      local owner, name
+      local hostname, owner, name
       if #vim.split(url, "://") == 2 then
         hostname, owner, name = string.match(url, '%a+://([^/]+)/([^/]+)/(.+)')
         name = string.gsub(name, ".git$", "")
-        print(hostname)
-        host:set_provider(hostname)
       elseif #vim.split(url, "@") == 2 then
         local segment = vim.split(url, ":")[2]
         owner = vim.split(segment, "/")[1]
         name = string.gsub(vim.split(segment, "/")[2], ".git$", "")
+        hostname = ""
         -- TODO: Find hostname
       end
-      return string.format("%s/%s", owner, name)
+
+      return hostname, owner, name
     end
   end
+end
+
+function M.get_remote_hostname()
+  hostname, _, _ = M.split_remote_url()
+  return hostname
+end
+
+function M.get_remote_name()
+  _, owner, name = M.split_remote_url()
+  return string.format("%s/%s", owner, name)
 end
 
 function M.commit_exists(commit, cb)
@@ -598,7 +607,7 @@ function M.get_repo_uri(_, repo)
 end
 
 function M.get_issue_obj_uri(issue)
-  return string.format("octo://%s/issue/%s", issue.repo.full_path, toString(issue.id))
+  return string.format("octo://%s/issue/%s", issue.repo.full_path, tostring(issue.id))
 end
 
 --- Get the URI for an issue

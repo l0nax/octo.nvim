@@ -53,7 +53,8 @@ function M.gen_from_issue(max_number, print_repo)
     if kind == "issue" then
       filename = utils.get_issue_obj_uri(obj)
     else
-      filename = utils.get_pull_request_uri(obj.repository.nameWithOwner, obj.iid) -- TODO: Refactor me
+      filename = "PULL_REQUEST"
+      -- filename = utils.get_pull_request_uri(obj.repository.nameWithOwner, obj.iid) -- TODO: Refactor me
     end
     return {
       filename = filename,

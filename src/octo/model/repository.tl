@@ -13,10 +13,13 @@ global type Repository = record
 end
 
 global type Issue = record
+  __typename: string
+
   -- Is the repository the issue belongs to.
   repo: Repository
 
   -- Is the ID of the Issue within the repository/ project.
+  -- For GitLab repos it's the IID.
   id: integer
   title: string
 end

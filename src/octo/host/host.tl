@@ -14,7 +14,7 @@ global type RepoHost = record
   list_issues: function(self: RepoHost, repo: Repository, filter: string, cb: function(output: string, stderr: string))
 
   -- Processes issues from JSON input.
-  process_issues: function(self: RepoHost, opts: ProcessIssuesOpts, output: string): {Issue}
+  process_issues: function(self: RepoHost, opts: ProcessIssuesOpts, output: string): {Issue}, integer
 
   -- Has some utility functions to process or validate
   -- input specifc to a hosting provider.

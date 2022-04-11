@@ -4,7 +4,7 @@ local graphql = require("octo.host.gitlab.graphql")
 local glab = require("octo.host.gitlab.glab")
 local utils = require("octo.utils")
 
-local GitLabIssuesQuery = {Data = {Project = {Node = {}, }, }, }
+local GitLabIssuesQuery = {Data = {Project = {Node = {GitLabIssue = {}, }, }, }, }
 
 
 
@@ -17,15 +17,27 @@ local GitLabIssuesQuery = {Data = {Project = {Node = {}, }, }, }
 
 
 
-local M = {}
+
+
+
+
+
+local M = {
+   util = {},
+}
 
 function M:get_user_name()
    return glab.get_user_name()
 end
 
 function M:list_issues(repo, filter, cb)
+   if not filter then
+      filter = ""
+   end
+
    local query = graphql.g("issues_query", repo.full_path, filter, { escape = false })
    glab.run({
+      hostname = repo.hostname,
       args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
       cb = cb,
    })
@@ -38,18 +50,26 @@ function M:process_issues(opts, output)
       utils.notify(string.format("There are no matching issues in %s.", opts.repo), 2)
       return
    end
+
    local max_number = -1
+   local ret = {}
    for i, issue in ipairs(issues) do
-      if #tostring(issue.id) > max_number then
-         max_number = #tostring(issue.id)
+      if #tostring(issue.iid) > max_number then
+         max_number = #tostring(issue.iid)
       end
 
-      issues[i].repo = opts.repo
+      ret[i] = {}
+      ret[i].__typename = "Issue"
+      ret[i].repo = opts.repo
+      ret[i].id = issue.iid
+      ret[i].title = issue.title
    end
+
    opts.preview_title = opts.preview_title or ""
    opts.prompt_title = opts.prompt_title or ""
    opts.results_title = opts.results_title or ""
 
+   return ret, max_number
 end
 
 function M.util:get_filter(opts, kind)

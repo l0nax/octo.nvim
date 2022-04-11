@@ -58,6 +58,13 @@ local function get_filter(opts, kind)
   return filter
 end
 
+local function get_repository()
+  hostname = utils.get_remote_hostname()
+  host:set_provider(hostname)
+
+  return utils.get_repository()
+end
+
 local function open(command)
   return function(prompt_bufnr)
     local selection = action_state.get_selected_entry(prompt_bufnr)
@@ -142,8 +149,8 @@ function M.issues(opts)
     opts.state = opts.states
   end
 
-  if not opts.repo or opts.repo == vim.NIL then
-    opts.repo = utils.get_repository()
+  if not opts.repo or opts.repo == vim.NIL or type(opts.repo) == 'string' then
+    opts.repo = get_repository()
   end
   if not opts.repo then
     utils.notify("Cannot find repo", 2)
@@ -151,10 +158,10 @@ function M.issues(opts)
   end
 
   local filter = host.util:get_filter(opts, "issue")
-
-  host:list_issues {
-    repo = opts.repo,
-    cb = function(output, stderr)
+  host:list_issues(
+    opts.repo,
+    nil,
+    function(output, stderr)
       print " "
       if stderr and not utils.is_blank(stderr) then
         utils.notify(stderr, 2)
@@ -163,7 +170,8 @@ function M.issues(opts)
         return
       end
 
-      local issues = host:process_issues(opts, output)
+      local issues, max_number = host:process_issues(opts, output)
+      print(dump(issues))
       pickers.new(opts, {
         finder = finders.new_table {
           results = issues,
@@ -181,7 +189,7 @@ function M.issues(opts)
         end,
       }):find()
     end
-  }
+  )
 
   -- local query = graphql("issues_query", opts.repo, filter, { escape = false })
   -- print "Fetching issues (this may take a while) SUPER ..."

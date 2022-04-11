@@ -26,6 +26,7 @@ local issue = defaulter(function(opts)
         elseif entry.kind == "pull_request" then
           query = graphql("pull_request_query", owner, name, number)
         end
+
         gh.run {
           args = { "api", "graphql", "-f", string.format("query=%s", query) },
           cb = function(output, stderr)

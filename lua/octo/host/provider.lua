@@ -7,11 +7,16 @@ local prov = require("octo.host.helper")
 local M = {
    util = {},
 }
-local provider = {}
+local provider
+
+local function notify(msg, kind)
+   vim.notify(msg, kind, { title = "Octo.nvim" })
+end
 
 function M:set_provider(hostname)
    local p = prov.resolve(hostname)
    if not p then
+      notify("Unable to resolve provider for hostname " .. hostname, 2)
       return
    end
 
@@ -19,6 +24,7 @@ function M:set_provider(hostname)
 end
 
 function M:list_issues(repo, filter, cb)
+   print(repo)
    M:set_provider(repo.hostname)
    provider:list_issues(repo, filter, cb)
 end

@@ -4,6 +4,19 @@ local utils = require "octo.utils"
 
 local M = {}
 
+function dump(o)
+   if type(o) == 'table' then
+      local s = '{ '
+      for k,v in pairs(o) do
+         if type(k) ~= 'number' then k = '"'..k..'"' end
+         s = s .. '['..k..'] = ' .. dump(v) .. ','
+      end
+      return s .. '} '
+   else
+      return tostring(o)
+   end
+end
+
 function M.gen_from_issue(max_number, print_repo)
   local make_display = function(entry)
     if not entry then
@@ -53,8 +66,10 @@ function M.gen_from_issue(max_number, print_repo)
     if kind == "issue" then
       filename = utils.get_issue_obj_uri(obj)
     else
-      filename = utils.get_pull_request_uri(obj.repository.nameWithOwner, obj.iid) -- TODO: Refactor me
+      filename = "PULL_REQUEST"
+      -- filename = utils.get_pull_request_uri(obj.repository.nameWithOwner, obj.iid) -- TODO: Refactor me
     end
+    print(dump(obj))
     return {
       filename = filename,
       kind = kind,
