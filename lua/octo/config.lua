@@ -16,7 +16,6 @@ M.defaults = {
   git_hosts = {
     ["github.com"] = "github",
     ["gitlab.com"] = "gitlab",
-    ["gitlab.fabmation.info"] = "gitlab",
   },
   snippet_context_lines = 4,
   file_panel = {
