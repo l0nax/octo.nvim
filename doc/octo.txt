@@ -51,6 +51,8 @@ See |octo-command-examples| for examples.
 
 :Octo pr [action] {args}                        *octo-commands-pr*
 
+  Omit action to open the pull request matching the current branch.
+
   list [repo] {key=val} Lists all PRs satisfying a given filter.
                         In-menu mappings: 
                           <CR>    Edit PR.
@@ -62,6 +64,7 @@ See |octo-command-examples| for examples.
   edit [number] {repo}  Edits issue/PR with the given number in the current or
                         specified repo. 
   reopen                Reopen the current PR.
+  create                Creates a new PR for the current branch
   close                 Close the current PR.
   checkout              Checkout the PR.
   commits               List all PR commits.
@@ -70,6 +73,7 @@ See |octo-command-examples| for examples.
   merge [strategy]      Merge the current PR using the specified strategy.
                         Strategies: `commit`, `rebase`, `squash`, `delete`
   ready                 Mark a draft PR as ready for review.          
+  draft                 Send a ready for review PR back to draft.          
   checks                Show the status of all checks run on the PR.
   reload                Reload PR. Same as doing `e!`.
   browser               Open current PR in the browser.
@@ -81,9 +85,10 @@ See |octo-command-examples| for examples.
 
   list                  Lists repos the user owns, contributes, or belongs to.
   fork                  Fork repo.
-  browser               Open current PR in the browser.
+  browser               Open current repo in the browser.
   url                   Copies the URL of the current repo to the system 
                         clipboard.
+  view                  Open a repo by path ({organization}/{name}).
 
 
 :Octo gist [action]                             *octo-commands-gist*
@@ -106,6 +111,14 @@ See |octo-command-examples| for examples.
   unresolve             Mark a review thread as unresolved.
 
 
+:Octo milestone [action]                            *octo-commands-milestone*
+
+  add [milestone]       Add specified milestone or from the open milestone menu to current Issue or PR.
+  remove                Remove the currently assigned milestone from the current Issue or PR.
+  create [milestone]    Create a new milestone.
+  list [repo]           List milestones for the current or specified repo.
+
+
 :Octo label [action]                            *octo-commands-label*
 
   add [label]           Add specified label or from the available label menu.
@@ -113,7 +126,7 @@ See |octo-command-examples| for examples.
   create [label]        Create a new label.
 
 
-:Octo assignees [action]                        *octo-commands-assignees*
+:Octo assignee [action]                         *octo-commands-assignee*
 
   add [login]           Assign a user.
   remove [login]        Unassign a user
@@ -145,12 +158,16 @@ See |octo-command-examples| for examples.
 
 :Octo review [action]                           *octo-commands-review*
 
+  Omit action to resume a review if one is in progress, or start a new one if
+  no review is in progress.
+
   start                 Start a new review.
   submit                Submit the review.
   resume                Edit a pending review for the current PR.
   discard               Deletes a pending review for the current PR, if any.
   comments              View pending review comments.
   commit                Pick a specific commit to review.
+  close                 Close the review window and return to the PR.
 
 :Octo actions                                   *octo-commands-actions*
 
@@ -184,11 +201,10 @@ configuration in Lua.
 PR REVIEW                                       *octo-pr-review*
 
  Open the PR (eg: `Octo <PR url>` or `Octo pr list` or `Octo pr edit <PR number>`)
-* Start a review with `Octo review start` or resume a pending review with
+* Start a review with `Octo review start` or resume a pending review with `Octo review resume`
  A new tab will show a panel with changed files and two windows showing the diff on any of them.
-  `Octo review resume`
- Change panel entries with `]q` and `[q` or by selecting an entry in the window
-* Add comments with `<space>ca` or suggestions with `<space>sa` on single or
+ Change panel entries with `]q` and `[q` or by selecting an entry in the window.
+* Add comments with `<localleader>ca` or suggestions with `<localleader>sa` on single or
   multiple visual-selected lines
   * A new buffer will appear in the alternate diff window. Cursor will be
     positioned in the new buffer
@@ -289,18 +305,17 @@ Why am I getting authentication error from gh?~
   not authenticated.
 
   In case of the former, run:
->
+>bash
   GITHUB_TOKEN= gh auth login
-<  
+<
   ...and choose a method to authorise access for `gh`.
   `gh` must store the creds so it can work in a subshell.
 
 Can I use treesitter markdown parser with octo buffers?~
 
   Just add the following lines to your TreeSitter config:
->
-  local parser_config = require("nvim-treesitter.parsers").get_parser_configs()
-  parser_config.markdown.filetype_to_parsername = "octo"
+>lua
+  vim.treesitter.language.register('markdown', 'octo')
 <
 
 *How can I filter PRs by filter keys that aren't available?~
@@ -310,7 +325,7 @@ Can I use treesitter markdown parser with octo buffers?~
 
   For example to search for PRs with author you can use this command:
 
->
+>vim
   :Octo search is:pr author:pwntester repo:github/codeql
 <
 
@@ -320,10 +335,28 @@ Can I use treesitter markdown parser with octo buffers?~
 
   Add the following mappings for `octo` file type:
 
->
-  `vim.api.nvim_buf_set_keymap(0, "i", "@", "@<C-x><C-o>", { silent = true, noremap = true })
-  `vim.api.nvim_buf_set_keymap(0, "i", "#", "#<C-x><C-o>", { silent = true, noremap = true })
-<
+>lua
+  vim.keymap.set("i", "@", "@<C-x><C-o>", { silent = true, buffer = true })
+  vim.keymap.set("i", "#", "#<C-x><C-o>", { silent = true, buffer = true })
+
+
+I can't see my v2 projects in issues and/or pull requests!~
+
+  (and I see a warning when I open them)
+
+  You are missing a scope from the token gh uses. You can add the scope to
+  your gh token with
+
+  `gh auth refresh -s read:project`
+
+  Alternatively if you want to be able to modify projects (i.e. add/remove
+  cards) you need to add the `project` scope to your token instead.
+
+  If you don't care about projects v2 you can suppress the warning by setting
+  `suppress_missing_scope.projects_v2 = true` in your Octo config.
+
+How can I disable default key mappings?~
+  set `mappings_disable_default = true` in user config.
 
 CREDITS                                         *octo-credits*
 
