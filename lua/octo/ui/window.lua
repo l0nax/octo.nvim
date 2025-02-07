@@ -9,10 +9,8 @@ function M.create_border_header_float(opts)
   table.insert(outer, string.format("┌%s┐", line_fill))
   if opts.header then
     local trimmed_header = string.sub(opts.header, 1, opts.width - 2 * opts.border_width - 2 * opts.padding)
-    local fill = string.rep(
-      " ",
-      opts.width - 2 * opts.padding - 2 * opts.border_width - vim.fn.strdisplaywidth(trimmed_header)
-    )
+    local fill =
+      string.rep(" ", opts.width - 2 * opts.padding - 2 * opts.border_width - vim.fn.strdisplaywidth(trimmed_header))
     table.insert(outer, string.format("│ %s%s │", trimmed_header, fill))
     table.insert(outer, string.format("├%s┤", line_fill))
     for _ = 1, opts.height - 2 * opts.border_width - 2 * opts.header_height do
@@ -64,6 +62,9 @@ function M.create_content_float(opts)
   return winid, bufnr
 end
 
+---@param opts table
+---@return integer winid
+---@return integer bufnr
 function M.create_centered_float(opts)
   opts = opts or {}
   opts.x_percent = opts.x_percent or 0.6
@@ -97,6 +98,9 @@ function M.create_centered_float(opts)
     else
       opts.height = math.min(vim_height, 2 * opts.border_width + #opts.content) + 1
     end
+
+    opts.width = math.floor(opts.width)
+    opts.height = math.floor(opts.height)
   else
     opts.width = math.floor(vim_width * opts.x_percent)
     opts.height = math.floor(vim_height * opts.y_percent)
@@ -113,7 +117,7 @@ function M.create_centered_float(opts)
 
   -- window binding
   local aucmd = string.format(
-    "autocmd BufLeave,BufDelete <buffer=%d> :lua require('octo.window').try_close_wins(%d, %d)",
+    "autocmd BufLeave,BufDelete <buffer=%d> :lua require('octo.ui.window').try_close_wins(%d, %d)",
     bufnr,
     winid,
     outer_winid
@@ -123,7 +127,7 @@ function M.create_centered_float(opts)
   -- mappings
   local mapping_opts = { script = true, silent = true, noremap = true, buffer = bufnr, desc = "Close window" }
   vim.keymap.set("n", "<C-c>", function()
-    require("octo.window").try_close_wins(winid, outer_winid)
+    require("octo.ui.window").try_close_wins(winid, outer_winid)
   end, mapping_opts)
   return winid, bufnr
 end

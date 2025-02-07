@@ -1,19 +1,26 @@
-local constants = require "octo.constants"
-local date = require "octo.date"
-local gh = require "octo.gh"
-local graphql = require "octo.graphql"
 local config = require "octo.config"
+local constants = require "octo.constants"
+local gh = require "octo.gh"
+local graphql = require "octo.gh.graphql"
 local _, Job = pcall(require, "plenary.job")
+local vim = vim
 
 local M = {}
 
+---@class OctoRepo
+---@field host string
+---@field name string?
+---@field repo string?
+
 local repo_id_cache = {}
+local repo_templates_cache = {}
+local repo_info_cache = {}
 local path_sep = package.config:sub(1, 1)
 
 M.viewed_state_map = {
-  DISMISSED = { icon = " ", hl = "OctoRed" },
-  VIEWED = { icon = "﫟", hl = "OctoGreen" },
-  UNVIEWED = { icon = " ", hl = "OctoBlue" },
+  DISMISSED = { icon = "󰀨 ", hl = "OctoRed" },
+  VIEWED = { icon = "󰗠 ", hl = "OctoGreen" },
+  UNVIEWED = { icon = "󰄰 ", hl = "OctoBlue" },
 }
 
 M.state_msg_map = {
@@ -27,6 +34,9 @@ M.state_msg_map = {
 M.state_hl_map = {
   MERGED = "OctoStateMerged",
   CLOSED = "OctoStateClosed",
+  DRAFT = "OctoStateDraft",
+  COMPLETED = "OctoStateCompleted",
+  NOT_PLANNED = "OctoStateNotPlanned",
   OPEN = "OctoStateOpen",
   APPROVED = "OctoStateApproved",
   CHANGES_REQUESTED = "OctoStateChangesRequested",
@@ -38,15 +48,15 @@ M.state_hl_map = {
 }
 
 M.state_icon_map = {
-  MERGED = "⇌",
-  CLOSED = "⚑",
-  OPEN = "⚐",
-  APPROVED = "✓",
-  CHANGES_REQUESTED = "±",
-  COMMENTED = "☷",
-  DISMISSED = "",
-  PENDING = "",
-  REVIEW_REQUIRED = "",
+  MERGED = "⇌ ",
+  CLOSED = "⚑ ",
+  OPEN = "⚐ ",
+  APPROVED = "✓ ",
+  CHANGES_REQUESTED = "± ",
+  COMMENTED = "☷ ",
+  DISMISSED = " ",
+  PENDING = " ",
+  REVIEW_REQUIRED = " ",
 }
 
 M.state_message_map = {
@@ -68,6 +78,65 @@ M.file_status_map = {
   renamed = "R",
 }
 
+-- https://docs.github.com/en/graphql/reference/enums#statusstate
+M.state_map = {
+  ERROR = { symbol = "× ", hl = "OctoStateDismissed" },
+  FAILURE = { symbol = "× ", hl = "OctoStateDismissed" },
+  EXPECTED = { symbol = " ", hl = "OctoStatePending" },
+  PENDING = { symbol = " ", hl = "OctoStatePending" },
+  SUCCESS = { symbol = "✓ ", hl = "OctoStateApproved" },
+}
+
+M.mergeable_hl_map = {
+  CONFLICTING = "OctoStateDismissed",
+  MERGEABLE = "OctoStateApproved",
+  UNKNOWN = "OctoStatePending",
+}
+
+M.mergeable_message_map = {
+  CONFLICTING = "× CONFLICTING",
+  MERGEABLE = "✓ MERGEABLE",
+  UNKNOWN = " PENDING",
+}
+
+M.merge_state_hl_map = {
+  BEHIND = "OctoNormal",
+  BLOCKED = "OctoStateDismissed",
+  CLEAN = "OctoStateApproved",
+  DIRTY = "OctoStateDismissed",
+  DRAFT = "OctoStateDraftFloat",
+  HAS_HOOKS = "OctoStateApproved",
+  UNKNOWN = "OctoStatePending",
+  UNSTABLE = "OctoStateDismissed",
+}
+
+M.merge_state_message_map = {
+  BEHIND = "- OUT-OF-DATE",
+  BLOCKED = "× BLOCKED",
+  CLEAN = "✓ CLEAN",
+  DIRTY = "× DIRTY",
+  DRAFT = "= DRAFT",
+  HAS_HOOKS = "✓ HAS-HOOKS",
+  UNKNOWN = " PENDING",
+  UNSTABLE = "! UNSTABLE",
+}
+
+M.auto_merge_method_map = {
+  MERGE = "commit",
+  REBASE = "rebase",
+  SQUASH = "squash",
+}
+
+function M.trim(str)
+  if type(vim.fn.trim) == "function" then
+    return vim.fn.trim(str)
+  elseif type(vim.trim) == "function" then
+    return vim.trim(str)
+  else
+    return str:gsub("^%s*(.-)%s*$", "%1")
+  end
+end
+
 function M.calculate_strongest_review_state(states)
   if vim.tbl_contains(states, "APPROVED") then
     return "APPROVED"
@@ -83,16 +152,21 @@ function M.calculate_strongest_review_state(states)
 end
 
 M.reaction_map = {
-  ["THUMBS_UP"] = "👍",
-  ["THUMBS_DOWN"] = "👎",
-  ["LAUGH"] = "😀",
-  ["HOORAY"] = "🎉",
-  ["CONFUSED"] = "😕",
-  ["HEART"] = "❤️",
-  ["ROCKET"] = "🚀",
-  ["EYES"] = "👀",
+  ["THUMBS_UP"] = "👍 ",
+  ["THUMBS_DOWN"] = "👎 ",
+  ["LAUGH"] = "😀 ",
+  ["HOORAY"] = "🎉 ",
+  ["CONFUSED"] = "😕 ",
+  ["HEART"] = "❤️ ",
+  ["ROCKET"] = "🚀 ",
+  ["EYES"] = "👀 ",
 }
 
+---@param tbl unknown[]
+---@param first integer
+---@param last integer
+---@param step integer?
+---@return unknown[]
 function M.tbl_slice(tbl, first, last, step)
   local sliced = {}
   for i = first or 1, last or #tbl, step or 1 do
@@ -127,8 +201,15 @@ function M.is_blank(s)
 end
 
 function M.parse_remote_url(url, aliases)
+  -- filesystem path
+  if vim.startswith(url, "/") or vim.startswith(url, ".") then
+    return {
+      host = nil,
+      repo = url,
+    }
+  end
   -- remove trailing ".git"
-  url = string.gsub(url, ".git$", "")
+  url = string.gsub(url, "%.git$", "")
   -- remove protocol scheme
   url = string.gsub(url, "^[^:]+://", "")
   -- remove user
@@ -136,7 +217,7 @@ function M.parse_remote_url(url, aliases)
   -- if url contains two slashes
   local segments = vim.split(url, "/")
   local host, repo
-  if #segments == 3 then
+  if #segments == 3 or (#segments == 4 and segments[4] == "") then
     host = segments[1]
     repo = segments[2] .. "/" .. segments[3]
   elseif #segments == 2 then
@@ -145,8 +226,9 @@ function M.parse_remote_url(url, aliases)
     repo = chunks[#chunks]
   end
 
-  if aliases[host] then
-    host = aliases[host]
+  for alias, rhost in pairs(aliases) do
+    alias = alias:gsub("%-", "%%-")
+    host = host:gsub("^" .. alias .. "$", rhost, 1)
   end
   if not M.is_blank(host) and not M.is_blank(repo) then
     return {
@@ -156,20 +238,40 @@ function M.parse_remote_url(url, aliases)
   end
 end
 
-function M.get_remote()
-  local conf = config.get_config()
+---Parse local git remotes from git cli
+---@return OctoRepo[]
+function M.parse_git_remote()
+  local conf = config.values
   local aliases = conf.ssh_aliases
-  for _, candidate in ipairs(conf.default_remote) do
-    local job = Job:new {
-      command = "git",
-      args = { "remote", "get-url", candidate },
-      cwd = vim.fn.getcwd(),
-    }
-    job:sync()
-    local url = table.concat(job:result(), "\n")
-    local stderr = table.concat(job:stderr_result(), "\n")
-    if M.is_blank(stderr) then
-      return M.parse_remote_url(url, aliases)
+  local job = Job:new { command = "git", args = { "remote", "-v" }, cwd = vim.fn.getcwd() }
+  job:sync()
+  local stderr = table.concat(job:stderr_result(), "\n")
+  if not M.is_blank(stderr) then
+    return {}
+  end
+  local remotes = {}
+  for _, line in ipairs(job:result()) do
+    local name, url = line:match "^(%S+)%s+(%S+)"
+    if name then
+      local remote = M.parse_remote_url(url, aliases)
+      if remote then
+        remotes[name] = remote
+      end
+    end
+  end
+  return remotes
+end
+
+---Returns first host and repo information found in a list of remote values
+---If no argument is provided, defaults to matching against config's default remote
+---@param remote table | nil list of local remotes to match against
+---@return OctoRepo
+function M.get_remote(remote)
+  local conf = config.values
+  local remotes = M.parse_git_remote()
+  for _, name in ipairs(remote or conf.default_remote) do
+    if remotes[name] then
+      return remotes[name]
     end
   end
   -- return github.com as default host
@@ -179,32 +281,143 @@ function M.get_remote()
   }
 end
 
-function M.get_remote_name()
-  return M.get_remote().repo
+function M.get_remote_url()
+  local host = M.get_remote_host()
+  local remote_name = M.get_remote_name()
+  if not host or not remote_name then
+    M.error "No remote repository found"
+    return
+  end
+  return "https://" .. host .. "/" .. remote_name
 end
 
-function M.get_remote_host()
-  return M.get_remote().host
+function M.get_all_remotes()
+  return vim.tbl_values(M.parse_git_remote())
+end
+
+---@param remote table|nil
+---@return string?
+function M.get_remote_name(remote)
+  return M.get_remote(remote).repo
+end
+
+function M.get_remote_host(remote)
+  return M.get_remote(remote).host
 end
 
 function M.commit_exists(commit, cb)
   if not Job then
     return
   end
-  Job
-    :new({
-      enable_recording = true,
-      command = "git",
-      args = { "cat-file", "-t", commit },
-      on_exit = vim.schedule_wrap(function(j_self, _, _)
-        if "commit" == vim.fn.trim(table.concat(j_self:result(), "\n")) then
-          cb(true)
-        else
-          cb(false)
-        end
-      end),
-    })
-    :start()
+  Job:new({
+    enable_recording = true,
+    command = "git",
+    args = { "cat-file", "-t", commit },
+    on_exit = vim.schedule_wrap(function(j_self, _, _)
+      if "commit" == M.trim(table.concat(j_self:result(), "\n")) then
+        cb(true)
+      else
+        cb(false)
+      end
+    end),
+  }):start()
+end
+
+---Add a milestone to an issue or PR
+---@param issue boolean true if issue, false if PR
+---@param number number issue or PR number
+---@param milestone_name string milestone name
+function M.add_milestone(issue, number, milestone_name)
+  local command = issue and "issue" or "pr"
+  local args = { command, "edit", number, "--milestone", milestone_name }
+
+  gh.run {
+    args = args,
+    cb = function(output, stderr)
+      if stderr and not M.is_blank(stderr) then
+        M.error(stderr)
+      elseif output then
+        M.info("Added milestone " .. milestone_name)
+      end
+    end,
+  }
+end
+
+---Remove a milestone from an issue or PR
+---@param issue boolean true if issue, false if PR
+---@param number number issue or PR number
+function M.remove_milestone(issue, number)
+  local command = issue and "issue" or "pr"
+  local args = { command, "edit", number, "--remove-milestone" }
+
+  gh.run {
+    args = args,
+    cb = function(output, stderr)
+      if stderr and not M.is_blank(stderr) then
+        M.error(stderr)
+      elseif output then
+        M.info "Removed milestone"
+      end
+    end,
+  }
+end
+
+---https://docs.github.com/en/rest/issues/milestones?apiVersion=2022-11-28#create-a-milestone
+---Create a new milestone
+---@param title string
+---@param description string
+function M.create_milestone(title, description)
+  if M.is_blank(title) then
+    M.error "Title is required to create milestone"
+    return
+  end
+
+  local owner, name = M.split_repo(M.get_remote_name())
+  local endpoint = string.format("repos/%s/%s/milestones", owner, name)
+  local args = { "api", "--method", "POST", endpoint }
+
+  local data = {
+    title = title,
+    description = description,
+    state = "open",
+  }
+
+  for key, value in pairs(data) do
+    table.insert(args, "-f")
+    table.insert(args, string.format("%s=%s", key, value))
+  end
+
+  gh.run {
+    args = args,
+    cb = function(output, stderr)
+      if stderr and not M.is_blank(stderr) then
+        M.error(stderr)
+      elseif output then
+        local resp = vim.json.decode(output)
+        M.info("Created milestone " .. resp.title)
+      end
+    end,
+  }
+end
+
+function M.develop_issue(issue_repo, issue_number, branch_repo)
+  if M.is_blank(branch_repo) then
+    branch_repo = M.get_remote_name()
+  end
+
+  local args = { "issue", "develop", "--repo", issue_repo, issue_number, "--checkout", "--branch-repo", branch_repo }
+
+  gh.run {
+    args = args,
+    cb = function(stdout, stderr)
+      if stderr and not M.is_blank(stderr) then
+        M.error(stderr)
+      elseif stdout then
+        local output = vim.fn.system "git branch --show-current"
+        M.info("Switched to " .. output)
+      end
+    end,
+  }
 end
 
 function M.get_file_at_commit(path, commit, cb)
@@ -215,110 +428,277 @@ function M.get_file_at_commit(path, commit, cb)
     enable_recording = true,
     command = "git",
     args = { "show", string.format("%s:%s", commit, path) },
-    on_exit = vim.schedule_wrap(function(j_self, _, _)
-      local output = table.concat(j_self:result(), "\n")
-      local stderr = table.concat(j_self:stderr_result(), "\n")
-      cb(vim.split(output, "\n"), vim.split(stderr, "\n"))
-    end),
   }
-  job:start()
+  local result = job:sync()
+  local output = table.concat(result, "\n")
+  cb(vim.split(output, "\n"))
 end
 
 function M.in_pr_repo()
   local bufnr = vim.api.nvim_get_current_buf()
   local buffer = octo_buffers[bufnr]
   if not buffer then
-    M.notify("Not in Octo buffer", 2)
+    M.error "Not in Octo buffer"
     return
   end
   if not buffer:isPullRequest() then
-    M.notify("Not in Octo PR buffer", 2)
+    M.error "Not in Octo PR buffer"
     return
   end
 
   local local_repo = M.get_remote_name()
   if buffer.node.baseRepository.nameWithOwner ~= local_repo then
-    M.notify(
-      string.format("Not in PR repo. Expected %s, got %s", buffer.node.baseRepository.nameWithOwner, local_repo),
-      2
-    )
+    M.error(string.format("Not in PR repo. Expected %s, got %s", buffer.node.baseRepository.nameWithOwner, local_repo))
     return false
   else
     return true
   end
 end
 
-function M.in_pr_branch(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local buffer = octo_buffers[bufnr]
-  if not buffer then
-    return
-  end
-  if not buffer:isPullRequest() then
-    --M.notify("Not in Octo PR buffer", 2)
+--- Determines if we are locally are in a branch matching the pr head ref
+--- @param pr PullRequest
+--- @return boolean
+function M.in_pr_branch_locally_tracked(pr)
+  local cmd = "git rev-parse --abbrev-ref --symbolic-full-name @{u}"
+  local cmd_out = vim.fn.system(cmd)
+  if vim.v.shell_error ~= 0 then
     return false
   end
 
-  local cmd = "git rev-parse --abbrev-ref HEAD"
-  local local_branch = string.gsub(vim.fn.system(cmd), "%s+", "")
-  if local_branch == string.format("%s/%s", buffer.node.headRepoName, buffer.node.headRefName) then
-    -- for PRs submitted from master, local_branch will get something like other_repo/master
-    local_branch = vim.split(local_branch, "/")[2]
-  end
+  local local_branch_with_local_remote = vim.split(string.gsub(cmd_out, "%s+", ""), "/")
+  local local_remote = local_branch_with_local_remote[1]
+  local local_branch = table.concat(local_branch_with_local_remote, "/", 2)
 
-  local local_repo = M.get_remote_name()
-  if buffer.node.baseRepository.nameWithOwner == local_repo and buffer.node.headRefName == local_branch then
+  -- Github repos are case insensitive, ignore case when comparing to local remotes
+  local local_repo = M.get_remote_name({ local_remote }):lower()
+
+  if local_repo == pr.head_repo:lower() and local_branch == pr.head_ref_name then
     return true
-  elseif buffer.node.baseRepository.nameWithOwner ~= local_repo then
-    --M.notify(string.format("Not in PR repo. Expected %s, got %s", buffer.node.baseRepository.nameWithOwner, local_repo), 2)
-    return false
-  elseif buffer.node.headRefName ~= local_branch then
-    -- TODO: suggest to checkout the branch
-    --M.notify(string.format("Not in PR branch. Expected %s, got %s", buffer.node.headRefName, local_branch), 2)
-    return false
-  else
-    return false
   end
+
+  return false
 end
 
----Checks out a PR b number
+-- the gh cli stores the remote info for a PR branch in a branch specific
+-- config value.
+--
+-- this function searches for the upstream info, if it exists, for the current
+-- checked out branch, within git config branch specific values.
+--
+-- if a config value is found the upstream branch name is returned, verbatim.
+-- if no config value is found an empty string is returned.
+--
+-- this is useful when you want to determine if the currently checked out branch
+-- maps to a PR HEAD, when 'gh pr checkout' is used.
+function M.get_upstream_branch_from_config(pr)
+  local branch_cmd = "git rev-parse --abbrev-ref HEAD"
+  local branch = vim.fn.system(branch_cmd)
+  if vim.v.shell_error ~= 0 then
+    return ""
+  end
+
+  if #branch == 0 then
+    return ""
+  end
+
+  -- trim white space off branch
+  branch = string.gsub(branch, "%s+", "")
+
+  local merge_config_cmd = string.format('git config --get-regexp "^branch\\.%s\\.merge"', branch)
+
+  local merge_config = vim.fn.system(merge_config_cmd)
+  if vim.v.shell_error ~= 0 then
+    return ""
+  end
+
+  if #merge_config == 0 then
+    return ""
+  end
+
+  -- split merge_config to key, value with space delimeter
+  local merge_config_kv = vim.split(merge_config, "%s+")
+  -- use > 2 since there maybe some garbage white space at the end of the map.
+  if #merge_config_kv < 2 then
+    return ""
+  end
+
+  local upstream_branch_ref = merge_config_kv[2]
+
+  -- branch config can be in "refs/pull/{pr_number}/head" format
+  if string.find(upstream_branch_ref, "^refs/pull/") then
+    local pr_number = vim.split(upstream_branch_ref, "/")[3]
+    -- tonumber handles any whitespace/quoting issues
+    if tonumber(pr_number) == tonumber(pr.number) then
+      return branch
+    end
+  else
+    -- branch config can also be in "refs/heads/{upstream_branch_name} format"
+    local upstream_branch_name = string.gsub(upstream_branch_ref, "^refs/heads/", "")
+    return upstream_branch_name
+  end
+
+  return ""
+end
+
+-- Determines if we are locally in a branch matting the pr head ref when
+-- the remote and branch information is stored in the branch's git config values
+-- The gh CLI tool stores remote info directly in {branch.{branch}.x} configuration
+-- fields and does not create a remote
+function M.in_pr_branch_config_tracked(pr)
+  return M.get_upstream_branch_from_config(pr):lower() == pr.head_ref_name
+end
+
+--- Determines if we are locally are in a branch matching the pr head ref
+--- @param pr PullRequest
+--- @return boolean
+function M.in_pr_branch(pr)
+  return M.in_pr_branch_locally_tracked(pr) or M.in_pr_branch_config_tracked(pr)
+end
+
 function M.checkout_pr(pr_number)
+  gh.run {
+    args = { "pr", "checkout", pr_number },
+    cb = function(stdout, stderr)
+      if stderr and not M.is_blank(stderr) then
+        M.error(stderr)
+      elseif stdout then
+        local output = vim.fn.system "git branch --show-current"
+        M.info("Switched to " .. output)
+      end
+    end,
+  }
+end
+
+---@class CheckoutPrSyncOpts
+---@field repo string
+---@field pr_number number
+---@field timeout number
+
+---@param opts CheckoutPrSyncOpts
+---@return nil
+function M.checkout_pr_sync(opts)
   if not Job then
     return
   end
-  Job
-    :new({
-      enable_recording = true,
-      command = "gh",
-      args = { "pr", "checkout", pr_number },
-      on_exit = vim.schedule_wrap(function()
-        local output = vim.fn.system "git branch --show-current"
-        vim.notify("Switched to " .. output)
-      end),
-    })
-    :start()
+  Job:new({
+    enable_recording = true,
+    command = "gh",
+    args = { "pr", "checkout", opts.pr_number, "--repo", opts.repo },
+    on_exit = vim.schedule_wrap(function()
+      local output = vim.fn.system "git branch --show-current"
+      M.info("Switched to " .. output)
+    end),
+  }):sync(opts.timeout)
+end
+
+M.merge_method_to_flag = {
+  squash = "--squash",
+  rebase = "--rebase",
+  commit = "--merge",
+}
+
+function M.insert_merge_flag(args, method)
+  table.insert(args, M.merge_method_to_flag[method])
+end
+
+function M.insert_delete_flag(args, delete)
+  if delete then
+    table.insert(args, "--delete-branch")
+  end
+end
+
+---Merges a PR by number
+function M.merge_pr(pr_number)
+  if not Job then
+    M.error "Aborting PR merge"
+    return
+  end
+
+  local conf = config.values
+  local args = { "pr", "merge", pr_number }
+
+  M.insert_merge_flag(args, conf.default_merge_method)
+  M.insert_delete_flag(args, conf.default_delete_branch)
+
+  Job:new({
+    command = "gh",
+    args = args,
+    on_exit = vim.schedule_wrap(function(job, code)
+      if code == 0 then
+        M.info("Merged PR " .. pr_number .. "!")
+      else
+        local stderr = table.concat(job:stderr_result(), "\n")
+        if not M.is_blank(stderr) then
+          M.error(stderr)
+        end
+      end
+    end),
+  }):start()
 end
 
 ---Formats a string as a date
 function M.format_date(date_string)
-  local time_bias = date():getbias() * -1
-  local d = date(date_string):addminutes(time_bias)
-  local now = date(os.time())
-  local diff = date.diff(now, d)
-  if diff:spandays() > 0 and diff:spandays() > 30 and now:getyear() ~= d:getyear() then
-    return string.format("%s %s %d", d:getyear(), d:fmt "%b", d:getday())
-  elseif diff:spandays() > 0 and diff:spandays() > 30 and now:getyear() == d:getyear() then
-    return string.format("%s %d", d:fmt "%b", d:getday())
-  elseif diff:spandays() > 0 and diff:spandays() <= 30 then
-    return tostring(math.floor(diff:spandays())) .. " days ago"
-  elseif diff:spanhours() > 0 then
-    return tostring(math.floor(diff:spanhours())) .. " hours ago"
-  elseif diff:spanminutes() > 0 then
-    return tostring(math.floor(diff:spanminutes())) .. " minutes ago"
-  elseif diff:spanseconds() > 0 then
-    return tostring(math.floor(diff:spanswconds())) .. " seconds ago"
+  if date_string == nil then
+    return ""
+  end
+
+  -- Parse the input date string (assumed to be in UTC)
+  local year, month, day, hour, min, sec = date_string:match "(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)Z"
+  local parsedTimeUTC = os.time {
+    year = year,
+    month = month,
+    day = day,
+    hour = hour,
+    min = min,
+    sec = sec,
+    isdst = false, -- Input is in UTC
+  }
+
+  -- Get the offset of your local time zone from UTC
+  local localTime = os.time()
+  local utcTime = os.time(os.date "!*t")
+  local timeZoneOffset = os.difftime(localTime, utcTime)
+
+  -- Convert the parsed UTC time to local time
+  local parsedTimeLocal = parsedTimeUTC + timeZoneOffset
+
+  -- Calculate the time difference in seconds
+  local diff = os.time() - parsedTimeLocal
+
+  -- Determine if it's in the past or future
+  local suffix = " ago"
+  if diff < 0 then
+    diff = -diff
+    suffix = " from now"
+  end
+
+  -- Calculate time components
+  local days = math.floor(diff / 86400)
+  diff = diff % 86400
+  local hours = math.floor(diff / 3600)
+  diff = diff % 3600
+  local minutes = math.floor(diff / 60)
+  local seconds = diff % 60
+
+  -- Check if the difference is more than 30 days
+  if days > 30 then
+    local dateOutput = os.date("*t", parsedTimeLocal)
+    if dateOutput.year == os.date("*t", localTime).year then
+      return os.date("%B %d", parsedTimeLocal) -- "Month Day"
+    else
+      return os.date("%Y %B %d", parsedTimeLocal) -- "Year Month Day"
+    end
+  end
+
+  -- Return the human-readable format for differences within 30 days
+  if days > 0 then
+    return days .. " day" .. (days ~= 1 and "s" or "") .. suffix
+  elseif hours > 0 then
+    return hours .. " hour" .. (hours ~= 1 and "s" or "") .. suffix
+  elseif minutes > 0 then
+    return minutes .. " minute" .. (minutes ~= 1 and "s" or "") .. suffix
   else
-    return string.format("%s %s %d", d:getyear(), d:fmt "%b", d:getday())
+    return seconds .. " second" .. (seconds ~= 1 and "s" or "") .. suffix
   end
 end
 
@@ -333,19 +713,74 @@ function M.get_repo_id(repo)
       args = { "api", "graphql", "-f", string.format("query=%s", query) },
       mode = "sync",
     }
-    local resp = vim.fn.json_decode(output)
+    local resp = vim.json.decode(output)
     local id = resp.data.repository.id
     repo_id_cache[repo] = id
     return id
   end
 end
 
+-- Checks if the current cwd is in a git repo
+function M.cwd_is_git()
+  local cmd = "git rev-parse --is-inside-work-tree"
+  local out = vim.fn.system(cmd)
+  out = out:gsub("%s+", "")
+  return out == "true"
+end
+
+---Gets repo info
+function M.get_repo_info(repo)
+  if repo_info_cache[repo] then
+    return repo_info_cache[repo]
+  else
+    local owner, name = M.split_repo(repo)
+    local query = graphql("repository_query", owner, name)
+    local output = gh.run {
+      args = { "api", "graphql", "-f", string.format("query=%s", query) },
+      mode = "sync",
+    }
+    local resp = vim.json.decode(output)
+    local info = resp.data.repository
+    repo_info_cache[repo] = info
+    return info
+  end
+end
+
+---Gets repo's templates
+function M.get_repo_templates(repo)
+  if repo_templates_cache[repo] then
+    return repo_templates_cache[repo]
+  else
+    local owner, name = M.split_repo(repo)
+    local query = graphql("repository_templates_query", owner, name)
+    local output = gh.run {
+      args = { "api", "graphql", "-f", string.format("query=%s", query) },
+      mode = "sync",
+    }
+    local resp = vim.json.decode(output)
+    local templates = resp.data.repository
+
+    -- add an option to not use a template
+    table.insert(templates.issueTemplates, {
+      name = "DO NOT USE A TEMPLATE",
+      about = "Create issue with no template",
+      title = "",
+      body = "",
+    })
+
+    repo_templates_cache[repo] = templates
+    return templates
+  end
+end
+
 ---Helper method to aggregate an API paginated response
+---@param text string
+---@return table[]
 function M.get_pages(text)
   local results = {}
   local page_outputs = vim.split(text, "\n")
   for _, page in ipairs(page_outputs) do
-    local decoded_page = vim.fn.json_decode(page)
+    local decoded_page = vim.json.decode(page)
     table.insert(results, decoded_page)
   end
   return results
@@ -356,7 +791,7 @@ function M.get_flatten_pages(text)
   local results = {}
   local page_outputs = vim.split(text, "\n")
   for _, page in ipairs(page_outputs) do
-    local decoded_page = vim.fn.json_decode(page)
+    local decoded_page = vim.json.decode(page)
     for _, result in ipairs(decoded_page) do
       table.insert(results, result)
     end
@@ -365,6 +800,9 @@ function M.get_flatten_pages(text)
 end
 
 --- Helper method to aggregate an API paginated response
+---@param text string
+---@param aggregation_key string
+---@return table
 function M.aggregate_pages(text, aggregation_key)
   -- aggregation key can be at any level (eg: comments)
   -- take the first response and extend it with elements from the
@@ -382,53 +820,59 @@ function M.aggregate_pages(text, aggregation_key)
 end
 
 --- Helper method to aggregate an API paginated response
+---@param obj table<string, unknown>
+---@param prop string
+---@return unknown
 function M.get_nested_prop(obj, prop)
-  while true do
-    local parts = vim.split(prop, "%.")
-    if #parts == 1 then
-      break
-    else
-      local part = parts[1]
-      local remaining = table.concat(M.tbl_slice(parts, 2, #parts), ".")
-      return M.get_nested_prop(obj[part], remaining)
-    end
+  local parts = vim.split(prop, "%.")
+  if #parts == 1 then
+    return obj[prop]
+  else
+    local part = parts[1]
+    local remaining = table.concat(M.tbl_slice(parts, 2, #parts), ".")
+    return M.get_nested_prop(obj[part], remaining)
   end
-  return obj[prop]
 end
 
 --- Escapes a characters on a string to be used as a JSON string
 function M.escape_char(string)
-  return string.gsub(string, '["\\]', {
-    ['"'] = '\\"',
+  return string.gsub(string, "[\\]", {
     ["\\"] = "\\\\",
   })
 end
 
 --- Extracts repo and number from Octo command varargs
+---@param ... string|number
+---@return string? repo
+---@return integer? number
 function M.get_repo_number_from_varargs(...)
-  local repo, number
+  local repo, number ---@type string|nil, integer|nil
   local args = table.pack(...)
   if args.n == 0 then
-    M.notify("Missing arguments", 1)
+    M.error "Missing arguments"
     return
   elseif args.n == 1 then
     -- eg: Octo issue 1
     repo = M.get_remote_name()
     number = tonumber(args[1])
   elseif args.n == 2 then
-    -- eg: Octo issue pwntester/octo.nvim 1
-    repo = args[1]
-    number = tonumber(args[2])
+    -- eg: Octo issue 1 pwntester/octo.nvim
+    repo = args[2]
+    number = tonumber(args[1])
   else
-    M.notify("Unexpected arguments", 1)
+    M.error "Unexpected arguments"
     return
   end
   if not repo then
-    M.notify("Cant find repo name", 1)
+    M.error "Can not find repo name"
     return
   end
-  if not number then
-    M.notify("Missing issue/PR number", 1)
+  if type(repo) ~= "string" then
+    M.error(("Expected repo name, received %s"):format(args[2]))
+    return
+  end
+  if not number or type(number) ~= "number" then
+    M.error(("Expected issue/PR number, received %s"):format(args[1]))
     return
   end
   return repo, number
@@ -451,12 +895,20 @@ function M.get_pull_request_uri(...)
   return string.format("octo://%s/pull/%s", repo, number)
 end
 
+function M.get_discussion_uri(...)
+  local repo, number = M.get_repo_number_from_varargs(...)
+
+  return string.format("octo://%s/discussion/%s", repo, number)
+end
+
 ---Helper method opening octo buffers
 function M.get(kind, ...)
   if kind == "issue" then
     M.get_issue(...)
   elseif kind == "pull_request" then
     M.get_pull_request(...)
+  elseif kind == "discussion" then
+    M.get_discussion(...)
   elseif kind == "repo" then
     M.get_repo(...)
   end
@@ -472,6 +924,10 @@ end
 
 function M.get_pull_request(...)
   vim.cmd("edit " .. M.get_pull_request_uri(...))
+end
+
+function M.get_discussion(...)
+  vim.cmd("edit " .. M.get_discussion_uri(...))
 end
 
 function M.parse_url(url)
@@ -495,9 +951,9 @@ function M.get_file_contents(repo, commit, path, cb)
     args = { "api", "graphql", "-f", string.format("query=%s", query) },
     cb = function(output, stderr)
       if stderr and not M.is_blank(stderr) then
-        M.notify(stderr, 2)
+        M.error(stderr)
       elseif output then
-        local resp = vim.fn.json_decode(output)
+        local resp = vim.json.decode(output)
         local blob = resp.data.repository.object
         local lines = {}
         if blob and blob ~= vim.NIL and type(blob.text) == "string" then
@@ -533,8 +989,9 @@ end
 
 function M.cursor_in_col_range(start_col, end_col)
   local cursor = vim.api.nvim_win_get_cursor(0)
+  local col = cursor[2] + 1
   if start_col and end_col then
-    if start_col <= cursor[2] and cursor[2] <= end_col then
+    if start_col <= col and col <= end_col then
       return true
     end
   end
@@ -547,16 +1004,44 @@ function M.split_repo(repo)
   return owner, name
 end
 
-function M.extract_pattern_at_cursor(pattern)
-  local current_line = vim.fn.getline "."
-  if current_line:find(pattern) then
-    local res = table.pack(current_line:find(pattern))
-    local start_col = res[1]
-    local end_col = res[2]
-    if M.cursor_in_col_range(start_col, end_col) then
-      return unpack(M.tbl_slice(res, 3, #res))
+function M.extract_pattern_at_cursor(pattern, line, offset)
+  line = line or vim.api.nvim_get_current_line()
+  offset = offset or 0
+  if offset > 0 and pattern:sub(1, 1) == "^" then
+    return
+  end
+  local res = table.pack(line:find(pattern))
+  if #res == 0 then
+    return
+  end
+  local start_col = res[1]
+  local end_col = res[2]
+  if M.cursor_in_col_range(offset + start_col, offset + end_col) then
+    return unpack(M.tbl_slice(res, 3, #res))
+  elseif end_col == #line then
+    return
+  end
+  return M.extract_pattern_at_cursor(pattern, line:sub(end_col + 1), offset + end_col)
+end
+
+function M.extract_issue_at_cursor(current_repo)
+  local repo, number = M.extract_pattern_at_cursor(constants.LONG_ISSUE_PATTERN)
+  if not repo or not number then
+    number = M.extract_pattern_at_cursor(constants.SHORT_ISSUE_PATTERN)
+    if number then
+      repo = current_repo
     end
   end
+  if not repo or not number then
+    number = M.extract_pattern_at_cursor(constants.SHORT_ISSUE_LINE_BEGGINING_PATTERN)
+    if number then
+      repo = current_repo
+    end
+  end
+  if not repo or not number then
+    repo, _, number = M.extract_pattern_at_cursor(constants.URL_ISSUE_PATTERN)
+  end
+  return repo, number
 end
 
 function M.pattern_split(str, pattern)
@@ -648,9 +1133,8 @@ function M.is_thread_placed_in_buffer(thread, bufnr)
   local split, path = M.get_split_and_path(bufnr)
   if split == thread.diffSide and path == thread.path then
     return true
-  else
-    return false
   end
+  return false
 end
 
 function M.get_split_and_path(bufnr)
@@ -844,10 +1328,8 @@ function M.process_patch(patch)
   local hunk_strings = vim.split(patch:gsub("^@@", ""), "\n@@")
   for _, hunk in ipairs(hunk_strings) do
     local header = vim.split(hunk, "\n")[1]
-    local found, _, left_start, left_length, right_start, right_length = string.find(
-      header,
-      "^%s*%-(%d+),(%d+)%s+%+(%d+),(%d+)%s*@@"
-    )
+    local found, _, left_start, left_length, right_start, right_length =
+      string.find(header, "^%s*%-(%d+),(%d+)%s+%+(%d+),(%d+)%s*@@")
     if found then
       table.insert(hunks, hunk)
       table.insert(left_ranges, { tonumber(left_start), math.max(left_start + left_length - 1, 0) })
@@ -922,42 +1404,78 @@ function M.fork_repo()
   if not buffer or not buffer:isRepo() then
     return
   end
-  M.notify(string.format("Cloning %s. It can take a few minutes", buffer.repo), 1)
-  M.notify(vim.fn.system('echo "n" | gh repo fork ' .. buffer.repo .. " 2>&1 | cat "), 1)
+  M.info(string.format("Cloning %s. It can take a few minutes", buffer.repo))
+  M.info(vim.fn.system('echo "n" | gh repo fork ' .. buffer.repo .. " 2>&1 | cat "))
 end
 
-function M.notify(msg, kind)
-  vim.notify(msg, kind, { title = "Octo.nvim" })
+function M.notify(msg, level)
+  if level == 1 then
+    level = vim.log.levels.INFO
+  elseif level == 2 then
+    level = vim.log.levels.ERROR
+  else
+    level = vim.log.levels.INFO
+  end
+  vim.notify(msg, level, { title = "Octo.nvim" })
+end
+
+function M.info(msg)
+  vim.notify(msg, vim.log.levels.INFO, { title = "Octo.nvim" })
+end
+
+function M.error(msg)
+  vim.notify(msg, vim.log.levels.ERROR, { title = "Octo.nvim" })
 end
 
 function M.get_pull_request_for_current_branch(cb)
   gh.run {
-    args = { "pr", "status", "--json", "id,number,headRepositoryOwner,headRepository" },
-    cb = function(output)
-      local pr = vim.fn.json_decode(output)
-      if pr.currentBranch and pr.currentBranch.number then
-        local number = pr.currentBranch.number
-        local id = pr.currentBranch.id
-        local owner = pr.currentBranch.headRepositoryOwner.login
-        local name = pr.currentBranch.headRepository.name
-        local query = graphql("pull_request_query", owner, name, number)
+    args = { "pr", "view", "--json", "id,number,headRepositoryOwner,headRepository,isCrossRepository,url" },
+    cb = function(out)
+      if out == "" then
+        M.error "No pr found for current branch"
+        return
+      end
+      local pr = vim.json.decode(out)
+      local base_owner
+      local base_name
+      if pr.number then
+        if pr.isCrossRepository then
+          -- Parsing the pr url is the only way to get the target repo owner if the pr is cross repo
+          if not pr.url then
+            M.error "Failed to get pr url"
+            return
+          end
+          local url_suffix = pr.url:match "[^/]+/[^/]+/pull/%d+$"
+          if not url_suffix then
+            M.error "Failed to parse pr url"
+            return
+          end
+          local iter = url_suffix:gmatch "[^/]+/"
+          base_owner = iter():sub(1, -2)
+          base_name = iter():sub(1, -2)
+        else
+          base_owner = pr.headRepositoryOwner.login
+          base_name = pr.headRepository.name
+        end
+        local number = pr.number
+        local id = pr.id
+        local query = graphql("pull_request_query", base_owner, base_name, number, _G.octo_pv2_fragment)
         gh.run {
           args = { "api", "graphql", "--paginate", "--jq", ".", "-f", string.format("query=%s", query) },
           cb = function(output, stderr)
             if stderr and not M.is_blank(stderr) then
               vim.api.nvim_err_writeln(stderr)
             elseif output then
-              local resp = M.aggregate_pages(
-                output,
-                string.format("data.repository.%s.timelineItems.nodes", "pullRequest")
-              )
+              local resp = M.aggregate_pages(output, "data.repository.pullRequest.timelineItems.nodes")
               local obj = resp.data.repository.pullRequest
               local Rev = require("octo.reviews.rev").Rev
               local PullRequest = require("octo.model.pull-request").PullRequest
               local pull_request = PullRequest:new {
-                repo = owner .. "/" .. name,
+                repo = base_owner .. "/" .. base_name,
+                head_repo = obj.headRepository.nameWithOwner,
                 number = number,
                 id = id,
+                head_ref_name = obj.headRefName,
                 left = Rev:new(obj.baseRefOid),
                 right = Rev:new(obj.headRefOid),
                 files = obj.files.nodes,
@@ -971,40 +1489,46 @@ function M.get_pull_request_for_current_branch(cb)
   }
 end
 
+local function close_preview_window(winnr, bufnrs)
+  vim.schedule(function()
+    -- exit if we are in one of ignored buffers
+    if bufnrs and vim.tbl_contains(bufnrs, vim.api.nvim_get_current_buf()) then
+      return
+    end
+
+    local augroup = "preview_window_" .. winnr
+    pcall(vim.api.nvim_del_augroup_by_name, augroup)
+    pcall(vim.api.nvim_win_close, winnr, true)
+  end)
+end
+
 --- Creates autocommands to close a preview window when events happen.
 ---
 ---@param events table list of events
 ---@param winnr number window id of preview window
 ---@param bufnrs table list of buffers where the preview window will remain visible
----@see |autocmd-events|
+---@see autocmd-events
 function M.close_preview_autocmd(events, winnr, bufnrs)
-  local augroup = "preview_window_" .. winnr
+  local augroup = vim.api.nvim_create_augroup("preview_window_" .. winnr, {
+    clear = true,
+  })
 
   -- close the preview window when entered a buffer that is not
   -- the floating window buffer or the buffer that spawned it
-  vim.cmd(string.format(
-    [[
-    augroup %s
-      autocmd!
-      autocmd BufEnter * lua vim.lsp.util._close_preview_window(%d, {%s})
-    augroup end
-  ]],
-    augroup,
-    winnr,
-    table.concat(bufnrs, ",")
-  ))
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = augroup,
+    callback = function()
+      close_preview_window(winnr, bufnrs)
+    end,
+  })
 
   if #events > 0 then
-    vim.cmd(string.format(
-      [[
-      augroup %s
-        autocmd %s <buffer> lua vim.lsp.util._close_preview_window(%d)
-      augroup end
-    ]],
-      augroup,
-      table.concat(events, ","),
-      winnr
-    ))
+    vim.api.nvim_create_autocmd(events, {
+      buffer = bufnrs[2],
+      callback = function()
+        close_preview_window(winnr)
+      end,
+    })
   end
 end
 
@@ -1015,7 +1539,7 @@ function M.get_user_id(login)
     mode = "sync",
   }
   if output then
-    local resp = vim.fn.json_decode(output)
+    local resp = vim.json.decode(output)
     if resp.data.user and resp.data.user ~= vim.NIL then
       return resp.data.user.id
     end
@@ -1026,7 +1550,7 @@ function M.get_label_id(label)
   local bufnr = vim.api.nvim_get_current_buf()
   local buffer = octo_buffers[bufnr]
   if not buffer then
-    M.notify("Not in Octo buffer", 2)
+    M.error "Not in Octo buffer"
     return
   end
 
@@ -1037,7 +1561,7 @@ function M.get_label_id(label)
     mode = "sync",
   }
   if output then
-    local resp = vim.fn.json_decode(output)
+    local resp = vim.json.decode(output)
     if resp.data.repository.labels.nodes and resp.data.repository.labels.nodes ~= vim.NIL then
       for _, l in ipairs(resp.data.repository.labels.nodes) do
         if l.name == label then
@@ -1071,6 +1595,12 @@ function M.generate_position2line_map(diffhunk)
       right_side_line = right_side_line + 1
       left_side_line = left_side_line + 1
     end
+  end
+  if left_offset == nil then
+    left_offset = 0
+  end
+  if right_offset == nil then
+    right_offset = 0
   end
   return {
     left_side_lines = left_side_lines,
@@ -1109,6 +1639,162 @@ function M.extract_rest_id(comment_url)
     rest_id = i
   end
   return rest_id
+end
+
+--- Apply mappings to a buffer
+---@param kind string
+---@param bufnr integer
+function M.apply_mappings(kind, bufnr)
+  local mappings = require "octo.mappings"
+  local conf = config.values
+  for action, value in pairs(conf.mappings[kind]) do
+    if
+      not M.is_blank(value)
+      and not M.is_blank(action)
+      and not M.is_blank(value.lhs)
+      and not M.is_blank(mappings[action])
+    then
+      if M.is_blank(value.desc) then
+        value.desc = ""
+      end
+      local mapping_opts = { silent = true, noremap = true, buffer = bufnr, desc = value.desc }
+      local mode = value.mode or "n"
+      vim.keymap.set(mode, value.lhs, mappings[action], mapping_opts)
+    end
+  end
+end
+
+-- Returns the starting and ending lines to be commented based on the calling context.
+function M.get_lines_from_context(calling_context)
+  local line_number_start = nil
+  local line_number_end = nil
+  if calling_context == "line" then
+    line_number_start = vim.fn.line "."
+    line_number_end = line_number_start
+  elseif calling_context == "visual" then
+    line_number_start = vim.fn.line "v"
+    line_number_end = vim.fn.line "."
+  elseif calling_context == "motion" then
+    line_number_start = vim.fn.getpos("'[")[2]
+    line_number_end = vim.fn.getpos("']")[2]
+  end
+  return line_number_start, line_number_end
+end
+
+function M.convert_vim_mapping_to_fzf(vim_mapping)
+  local fzf_mapping = string.gsub(vim_mapping, "<[cC]%-(.*)>", "ctrl-%1")
+  fzf_mapping = string.gsub(fzf_mapping, "<[amAM]%-(.*)>", "alt-%1")
+  return string.lower(fzf_mapping)
+end
+
+--- Logic to determine the state displayed for issue or PR
+---@param isIssue boolean
+---@param state string
+---@param stateReason string | nil
+---@return string
+function M.get_displayed_state(isIssue, state, stateReason, isDraft)
+  if isIssue and state == "CLOSED" then
+    return stateReason or state
+  end
+
+  if isDraft then
+    return "DRAFT"
+  end
+
+  return state
+end
+
+--- @class EntryObject
+--- @field state string
+--- @field isDraft boolean
+--- @field stateReason string
+--- @field isAnswered boolean
+--- @field closed boolean
+
+--- @class Entry
+--- @field kind string
+--- @field obj EntryObject
+
+--- @class Icon
+--- @field [1] string The icon
+--- @field [2] string|nil The highlight group for the icon
+--- @see octo.ui.colors for the available highlight groups
+
+-- Symbols found with "Telescope symbols"
+M.icons = {
+  issue = {
+    open = { " ", "OctoGreen" },
+    closed = { " ", "OctoPurple" },
+    not_planned = { " ", "OctoGrey" },
+  },
+  pull_request = {
+    open = { " ", "OctoGreen" },
+    draft = { " ", "OctoGrey" },
+    merged = { " ", "OctoPurple" },
+    closed = { " ", "OctoRed" },
+  },
+  discussion = {
+    open = { " ", "OctoGrey" },
+    answered = { " ", "OctoGreen" },
+    closed = { " ", "OctoRed" },
+  },
+  notification = {
+    issue = {
+      unread = { " ", "OctoBlue" },
+      read = { " ", "OctoGrey" },
+    },
+    pull_request = {
+      unread = { " ", "OctoBlue" },
+      read = { " ", "OctoGrey" },
+    },
+  },
+  unknown = { " " },
+}
+
+--- Get the icon for the entry
+---@param entry Entry: The entry to get the icon for
+---@return Icon: The icon for the entry
+function M.get_icon(entry)
+  local kind = entry.kind
+
+  if kind == "issue" then
+    local state = entry.obj.state
+    local stateReason = entry.obj.stateReason
+
+    if state == "OPEN" then
+      return M.icons.issue.open
+    elseif state == "CLOSED" and stateReason == "NOT_PLANNED" then
+      return M.icons.issue.not_planned
+    elseif state == "CLOSED" then
+      return M.icons.issue.closed
+    end
+  elseif kind == "pull_request" then
+    local state = entry.obj.state
+    local isDraft = entry.obj.isDraft
+
+    if state == "MERGED" then
+      return M.icons.pull_request.merged
+    elseif state == "CLOSED" then
+      return M.icons.pull_request.closed
+    elseif isDraft then
+      return M.icons.pull_request.draft
+    elseif state == "OPEN" then
+      return M.icons.pull_request.open
+    end
+  elseif kind == "discussion" then
+    local closed = entry.obj.closed
+    local isAnswered = entry.obj.isAnswered
+
+    if isAnswered ~= vim.NIL and isAnswered then
+      return M.icons.discussion.answered
+    elseif not closed then
+      return M.icons.discussion.open
+    else
+      return M.icons.discussion.closed
+    end
+  end
+
+  return M.icons.unknown
 end
 
 return M

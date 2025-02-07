@@ -38,7 +38,6 @@ FilePanel.winopts = {
   winhl = table.concat({
     "EndOfBuffer:OctoEndOfBuffer",
     "Normal:OctoNormal",
-    --'CursorLine:OctoCursorLine',
     "VertSplit:OctoVertSplit",
     "SignColumn:OctoNormal",
     "StatusLine:OctoStatusLine",
@@ -58,7 +57,7 @@ FilePanel.bufopts = {
 ---@param files FileEntry[]
 ---@return FilePanel
 function FilePanel:new(files)
-  local conf = config.get_config()
+  local conf = config.values
   local this = {
     files = files,
     size = conf.file_panel.size,
@@ -96,7 +95,7 @@ function FilePanel:open()
     return
   end
 
-  local conf = config.get_config()
+  local conf = config.values
   self.size = conf.file_panel.size
   --vim.cmd("wincmd H")
   --vim.cmd("vsp")
@@ -155,17 +154,9 @@ function FilePanel:init_buffer()
     utils.wipe_named_buffer(bufname)
     vim.api.nvim_buf_set_name(bn, bufname)
   end
-
-  local conf = config.get_config()
-
-  for action, value in pairs(conf.mappings.file_panel) do
-    local mappings = require "octo.mappings"
-    local mapping_opts = { silent = true, noremap = true, buffer = bn, desc = value.desc }
-    vim.keymap.set("n", value.lhs, mappings[action], mapping_opts)
-  end
-
   self.bufid = bn
   self.render_data = renderer.RenderData:new(bufname)
+  utils.apply_mappings("file_panel", self.bufid)
   self:render()
   self:redraw()
 
@@ -190,8 +181,15 @@ function FilePanel:highlight_file(file)
   for i, f in ipairs(self.files) do
     if f == file then
       pcall(vim.api.nvim_win_set_cursor, self.winid, { i + header_size, 0 })
-      vim.api.nvim_buf_clear_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, "CursorLine", i + header_size - 1, 0, -1)
+      vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
+      vim.api.nvim_buf_add_highlight(
+        self.bufid,
+        constants.OCTO_FILE_PANEL_NS,
+        "OctoFilePanelSelectedFile",
+        i + header_size - 1,
+        0,
+        -1
+      )
     end
   end
 end
@@ -206,8 +204,6 @@ function FilePanel:highlight_prev_file()
     if f == cur then
       local line = utils.clamp(i + header_size - 1, header_size + 1, #self.files + header_size)
       pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
-      vim.api.nvim_buf_clear_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, "CursorLine", line - 1, 0, -1)
     end
   end
 end
@@ -222,13 +218,16 @@ function FilePanel:highlight_next_file()
     if f == cur then
       local line = utils.clamp(i + header_size + 1, header_size, #self.files + header_size)
       pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
-      vim.api.nvim_buf_clear_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, "CursorLine", line - 1, 0, -1)
     end
   end
 end
 
 function FilePanel:render()
+  local current_review = require("octo.reviews").get_current_review()
+  if not current_review then
+    return
+  end
+
   if not self.render_data then
     return
   end
@@ -240,8 +239,7 @@ function FilePanel:render()
     self.render_data:add_hl(...)
   end
 
-  local current_review = require("octo.reviews").get_current_review()
-  local conf = config.get_config()
+  local conf = config.values
   local strlen = vim.fn.strlen
   local s = "Files changed"
   add_hl("OctoFilePanelTitle", line_idx, 0, #s)
@@ -447,7 +445,7 @@ function M.thread_counts(path)
     end
     for _, comment in ipairs(thread.comments.nodes) do
       local review = comment.pullRequestReview
-      if review.state == "PENDING" and not utils.is_blank(vim.fn.trim(comment.body)) then
+      if not utils.is_blank(review) and review.state == "PENDING" and not utils.is_blank(utils.trim(comment.body)) then
         pending = pending + 1
       end
     end

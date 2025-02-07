@@ -1,4 +1,5 @@
 local reviews = require "octo.reviews"
+local config = require "octo.config"
 
 return {
   close_issue = function()
@@ -33,6 +34,9 @@ return {
   squash_and_merge_pr = function()
     require("octo.commands").merge_pr "squash"
   end,
+  rebase_and_merge_pr = function()
+    require("octo.commands").merge_pr "rebase"
+  end,
   add_reviewer = function()
     require("octo.commands").add_user "reviewer"
   end,
@@ -40,7 +44,7 @@ return {
     require("octo.commands").remove_user "reviewer"
   end,
   reload = function()
-    vim.cmd [[e!]]
+    require("octo.commands").reload()
   end,
   open_in_browser = function()
     require("octo.navigation").open_in_browser()
@@ -76,7 +80,10 @@ return {
     require("octo.navigation").prev_comment()
   end,
   add_comment = function()
-    require("octo.commands").add_comment()
+    require("octo.commands").add_pr_issue_or_review_thread_comment()
+  end,
+  add_suggestion = function()
+    require("octo.commands").add_suggestion()
   end,
   delete_comment = function()
     require("octo.commands").delete_comment()
@@ -105,14 +112,33 @@ return {
   react_confused = function()
     require("octo.commands").reaction_action "confused"
   end,
+  review_start = function()
+    reviews.start_review()
+  end,
+  review_resume = function()
+    reviews.resume_review()
+  end,
+  resolve_thread = function()
+    require("octo.commands").resolve_thread()
+  end,
+  unresolve_thread = function()
+    require("octo.commands").unresolve_thread()
+  end,
+  discard_review = function()
+    reviews.discard_review()
+  end,
+  submit_review = function()
+    reviews.submit_review()
+  end,
   add_review_comment = function()
-    require("octo.reviews").add_review_comment(false)
+    reviews.add_review_comment(false)
   end,
   add_review_suggestion = function()
-    require("octo.reviews").add_review_comment(true)
+    reviews.add_review_comment(true)
   end,
   close_review_tab = function()
-    require("octo.reviews").close()
+    local tabpage = vim.api.nvim_get_current_tabpage()
+    reviews.close(tabpage)
   end,
   next_thread = function()
     require("octo.reviews.file-panel").next_thread()
@@ -122,22 +148,26 @@ return {
   end,
   select_next_entry = function()
     local layout = reviews.get_current_layout()
-    if layout and layout.file_panel:is_open() then
-      local file_idx = layout.file_idx % #layout.files + 1
-      local file = layout.files[file_idx]
-      if file then
-        layout:set_file(file, true)
-      end
+    if layout then
+      layout:select_next_file()
     end
   end,
   select_prev_entry = function()
     local layout = reviews.get_current_layout()
-    if layout and layout.file_panel:is_open() then
-      local file_idx = (layout.file_idx - 2) % #layout.files + 1
-      local file = layout.files[file_idx]
-      if file then
-        layout:set_file(file, true)
-      end
+    if layout then
+      layout:select_prev_file()
+    end
+  end,
+  select_first_entry = function()
+    local layout = reviews.get_current_layout()
+    if layout then
+      layout:select_first_file()
+    end
+  end,
+  select_last_entry = function()
+    local layout = reviews.get_current_layout()
+    if layout then
+      layout:select_last_file()
     end
   end,
   next_entry = function()
@@ -157,7 +187,7 @@ return {
     if layout and layout.file_panel:is_open() then
       local file = layout.file_panel:get_file_at_cursor()
       if file then
-        layout:set_file(file, true)
+        layout:set_current_file(file)
       end
     end
   end,
@@ -180,18 +210,27 @@ return {
     end
   end,
   close_review_win = function()
-    vim.api.nvim_win_close(vim.api.nvim_get_current_win(), 1)
+    vim.api.nvim_win_close(vim.api.nvim_get_current_win(), true)
   end,
   approve_review = function()
-    local current_review = require("octo.reviews").get_current_review()
+    local current_review = reviews.get_current_review()
+    if not current_review then
+      return
+    end
     current_review:submit "APPROVE"
   end,
   comment_review = function()
-    local current_review = require("octo.reviews").get_current_review()
+    local current_review = reviews.get_current_review()
+    if not current_review then
+      return
+    end
     current_review:submit "COMMENT"
   end,
   request_changes = function()
-    local current_review = require("octo.reviews").get_current_review()
+    local current_review = reviews.get_current_review()
+    if not current_review then
+      return
+    end
     current_review:submit "REQUEST_CHANGES"
   end,
   toggle_viewed = function()

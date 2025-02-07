@@ -1,13 +1,60 @@
-require "octo"
 local OctoBuffer = require("octo.model.octo-buffer").OctoBuffer
-local previewers = require "telescope.previewers"
-local utils = require "octo.utils"
-local ts_utils = require "telescope.utils"
-local pv_utils = require "telescope.previewers.utils"
-local writers = require "octo.writers"
-local graphql = require "octo.graphql"
 local gh = require "octo.gh"
+local graphql = require "octo.gh.graphql"
+local writers = require "octo.ui.writers"
+local utils = require "octo.utils"
+local previewers = require "telescope.previewers"
+local pv_utils = require "telescope.previewers.utils"
+local ts_utils = require "telescope.utils"
 local defaulter = ts_utils.make_default_callable
+
+local vim = vim
+
+local discussion = defaulter(function(opts)
+  return previewers.new_buffer_previewer {
+    title = opts.preview_title,
+    get_buffer_by_name = function(_, entry)
+      return entry.value
+    end,
+    define_preview = function(self, entry)
+      local bufnr = self.state.bufnr
+
+      if self.state.bufname == entry.value and vim.api.nvim_buf_line_count(bufnr) ~= 1 then
+        return
+      end
+
+      local number = entry.value
+      local owner, name = utils.split_repo(entry.repo)
+      local query = graphql("discussion_query", owner, name, number)
+
+      gh.run {
+        args = { "api", "graphql", "-f", string.format("query=%s", query) },
+        cb = function(output, stderr)
+          if stderr and not utils.is_blank(stderr) then
+            vim.api.nvim_err_writeln(stderr)
+          elseif output and vim.api.nvim_buf_is_valid(bufnr) then
+            -- clear the buffer
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+
+            local result = vim.json.decode(output)
+            local obj = result.data.repository.discussion
+
+            writers.write_title(bufnr, tostring(obj.title), 1)
+            writers.write_discussion_details(bufnr, obj)
+            writers.write_body(bufnr, obj, 11)
+
+            if obj.answer ~= vim.NIL then
+              local line = vim.api.nvim_buf_line_count(bufnr) + 1
+              writers.write_discussion_answer(bufnr, obj, line)
+            end
+
+            vim.api.nvim_buf_set_option(bufnr, "filetype", "octo")
+          end
+        end,
+      }
+    end,
+  }
+end)
 
 local issue = defaulter(function(opts)
   return previewers.new_buffer_previewer {
@@ -22,9 +69,9 @@ local issue = defaulter(function(opts)
         local owner, name = utils.split_repo(entry.repo)
         local query
         if entry.kind == "issue" then
-          query = graphql("issue_query", owner, name, number)
+          query = graphql("issue_query", owner, name, number, _G.octo_pv2_fragment)
         elseif entry.kind == "pull_request" then
-          query = graphql("pull_request_query", owner, name, number)
+          query = graphql("pull_request_query", owner, name, number, _G.octo_pv2_fragment)
         end
         gh.run {
           args = { "api", "graphql", "-f", string.format("query=%s", query) },
@@ -32,17 +79,20 @@ local issue = defaulter(function(opts)
             if stderr and not utils.is_blank(stderr) then
               vim.api.nvim_err_writeln(stderr)
             elseif output and vim.api.nvim_buf_is_valid(bufnr) then
-              local result = vim.fn.json_decode(output)
+              local result = vim.json.decode(output)
               local obj
               if entry.kind == "issue" then
                 obj = result.data.repository.issue
               elseif entry.kind == "pull_request" then
                 obj = result.data.repository.pullRequest
               end
+
+              local state = utils.get_displayed_state(entry.kind == "issue", obj.state, obj.stateReason)
+
               writers.write_title(bufnr, obj.title, 1)
               writers.write_details(bufnr, obj)
               writers.write_body(bufnr, obj)
-              writers.write_state(bufnr, obj.state:upper(), number)
+              writers.write_state(bufnr, state:upper(), number)
               local reactions_line = vim.api.nvim_buf_line_count(bufnr) - 1
               writers.write_block(bufnr, { "", "" }, reactions_line)
               writers.write_reactions(bufnr, obj.reactionGroups, reactions_line)
@@ -97,7 +147,7 @@ local commit = defaulter(function(opts)
         vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
 
         local url = string.format("/repos/%s/commits/%s", opts.repo, entry.value)
-        local cmd = { "gh", "api", url, "-H", "Accept: application/vnd.github.v3.diff" }
+        local cmd = { "gh", "api", "--paginate", url, "-H", "Accept: application/vnd.github.v3.diff" }
         pv_utils.job_maker(cmd, self.state.bufnr, {
           value = entry.value,
           bufname = self.state.bufname,
@@ -156,10 +206,30 @@ local review_thread = defaulter(function(opts)
   }
 end, {})
 
+local issue_template = defaulter(function(opts)
+  return previewers.new_buffer_previewer {
+    title = opts.preview_title,
+    get_buffer_by_name = function(_, entry)
+      return entry.value
+    end,
+    define_preview = function(self, entry)
+      if self.state.bufname ~= entry.value or vim.api.nvim_buf_line_count(self.state.bufnr) == 1 then
+        local template = entry.template.body
+        if template then
+          vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, vim.split(template, "\n"))
+          vim.api.nvim_buf_set_option(self.state.bufnr, "filetype", "markdown")
+        end
+      end
+    end,
+  }
+end, {})
+
 return {
+  discussion = discussion,
   issue = issue,
   gist = gist,
   commit = commit,
   changed_files = changed_files,
   review_thread = review_thread,
+  issue_template = issue_template,
 }

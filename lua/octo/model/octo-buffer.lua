@@ -1,13 +1,15 @@
 local BodyMetadata = require("octo.model.body-metadata").BodyMetadata
 local TitleMetadata = require("octo.model.title-metadata").TitleMetadata
-local utils = require "octo.utils"
-local constants = require "octo.constants"
+local autocmds = require "octo.autocmds"
 local config = require "octo.config"
-local writers = require "octo.writers"
+local constants = require "octo.constants"
 local folds = require "octo.folds"
-local signs = require "octo.signs"
-local graphql = require "octo.graphql"
 local gh = require "octo.gh"
+local graphql = require "octo.gh.graphql"
+local signs = require "octo.ui.signs"
+local writers = require "octo.ui.writers"
+local utils = require "octo.utils"
+local vim = vim
 
 local M = {}
 
@@ -46,7 +48,9 @@ function OctoBuffer:new(opts)
     this.taggable_users = { this.node.author.login }
   elseif this.node and this.number then
     this.kind = "issue"
-    this.taggable_users = { this.node.author.login }
+    if not utils.is_blank(this.node.author) then
+      this.taggable_users = { this.node.author.login }
+    end
   elseif this.node and not this.number then
     this.kind = "repo"
   else
@@ -61,20 +65,13 @@ M.OctoBuffer = OctoBuffer
 
 ---Apply the buffer mappings
 function OctoBuffer:apply_mappings()
-  local conf = config.get_config()
-
   local kind = self.kind
   if self.kind == "pull" then
     kind = "pull_request"
   elseif self.kind == "reviewthread" then
     kind = "review_thread"
   end
-
-  for action, value in pairs(conf.mappings[kind]) do
-    local mappings = require "octo.mappings"
-    local mapping_opts = { silent = true, noremap = true, buffer = self.bufnr, desc = value.desc }
-    vim.keymap.set("n", value.lhs, mappings[action], mapping_opts)
-  end
+  utils.apply_mappings(kind, self.bufnr)
 end
 
 ---Clears the buffer
@@ -111,7 +108,8 @@ function OctoBuffer:render_issue()
   writers.write_details(self.bufnr, self.node)
 
   -- write issue/pr status
-  writers.write_state(self.bufnr, self.node.state:upper(), self.number)
+  local state = utils.get_displayed_state(self.kind == "issue", self.node.state, self.node.stateReason)
+  writers.write_state(self.bufnr, state:upper(), self.number)
 
   -- write body
   writers.write_body(self.bufnr, self.node)
@@ -130,7 +128,15 @@ function OctoBuffer:render_issue()
   local unrendered_labeled_events = {}
   local unrendered_unlabeled_events = {}
   local prev_is_event = false
+
+  local timeline_nodes = {}
   for _, item in ipairs(self.node.timelineItems.nodes) do
+    if item ~= vim.NIL then
+      table.insert(timeline_nodes, item)
+    end
+  end
+
+  for _, item in ipairs(timeline_nodes) do
     if item.__typename ~= "LabeledEvent" and #unrendered_labeled_events > 0 then
       writers.write_labeled_events(self.bufnr, unrendered_labeled_events, "added")
       unrendered_labeled_events = {}
@@ -208,6 +214,24 @@ function OctoBuffer:render_issue()
     elseif item.__typename == "ReviewDismissedEvent" then
       writers.write_review_dismissed_event(self.bufnr, item)
       prev_is_event = true
+    elseif item.__typename == "RenamedTitleEvent" then
+      writers.write_renamed_title_event(self.bufnr, item)
+      prev_is_event = true
+    elseif item.__typename == "ConnectedEvent" then
+      writers.write_connected_event(self.bufnr, item)
+      prev_is_event = true
+    elseif item.__typename == "CrossReferencedEvent" then
+      writers.write_cross_referenced_event(self.bufnr, item)
+      prev_is_event = true
+    elseif item.__typename == "ReferencedEvent" then
+      writers.write_referenced_event(self.bufnr, item)
+      prev_is_event = true
+    elseif item.__typename == "MilestonedEvent" then
+      writers.write_milestoned_event(self.bufnr, item)
+      prev_is_event = true
+    elseif item.__typename == "DemilestonedEvent" then
+      writers.write_demilestoned_event(self.bufnr, item)
+      prev_is_event = true
     end
   end
   if prev_is_event then
@@ -227,33 +251,31 @@ end
 function OctoBuffer:render_threads(threads)
   self:clear()
   writers.write_threads(self.bufnr, threads)
+  vim.api.nvim_buf_set_option(self.bufnr, "modified", false)
   self.ready = true
 end
 
----Confgiures the buffer
+---Configures the buffer
 function OctoBuffer:configure()
   -- configure buffer
   vim.api.nvim_buf_call(self.bufnr, function()
-    --options
     vim.cmd [[setlocal filetype=octo]]
     vim.cmd [[setlocal buftype=acwrite]]
     vim.cmd [[setlocal omnifunc=v:lua.octo_omnifunc]]
     vim.cmd [[setlocal conceallevel=2]]
-    vim.cmd [[setlocal signcolumn=yes]]
-    vim.cmd [[setlocal foldenable]]
-    vim.cmd [[setlocal foldtext=v:lua.octo_foldtext()]]
-    vim.cmd [[setlocal foldmethod=manual]]
-    vim.cmd [[setlocal foldcolumn=3]]
-    vim.cmd [[setlocal foldlevelstart=99]]
     vim.cmd [[setlocal nonumber norelativenumber nocursorline wrap]]
-    vim.cmd [[setlocal fillchars=fold:⠀,foldopen:⠀,foldclose:⠀,foldsep:⠀]]
 
-    -- autocmds
-    vim.cmd [[ augroup octo_buffer_autocmds ]]
-    vim.cmd(string.format([[ au! * <buffer=%d> ]], self.bufnr))
-    vim.cmd(string.format([[ au TextChanged <buffer=%d> lua require"octo".render_signcolumn() ]], self.bufnr))
-    vim.cmd(string.format([[ au TextChangedI <buffer=%d> lua require"octo".render_signcolumn() ]], self.bufnr))
-    vim.cmd [[ augroup END ]]
+    if config.values.ui.use_signcolumn then
+      vim.cmd [[setlocal signcolumn=yes]]
+      autocmds.update_signs(self.bufnr)
+    end
+    if config.values.ui.use_statuscolumn then
+      vim.opt_local.statuscolumn = [[%!v:lua.require'octo.ui.statuscolumn'.statuscolumn()]]
+      autocmds.update_signs(self.bufnr)
+    end
+    if config.values.ui.use_foldtext then
+      vim.opt_local.foldtext = [[v:lua.require'octo.folds'.foldtext()]]
+    end
   end)
 
   self:apply_mappings()
@@ -284,7 +306,7 @@ function OctoBuffer:async_fetch_taggable_users()
     args = { "api", string.format("repos/%s/contributors", self.repo) },
     cb = function(response)
       if not utils.is_blank(response) then
-        local resp = vim.fn.json_decode(response)
+        local resp = vim.json.decode(response)
         for _, contributor in ipairs(resp) do
           table.insert(users, contributor.login)
         end
@@ -300,7 +322,7 @@ function OctoBuffer:async_fetch_issues()
     args = { "api", string.format("repos/%s/issues", self.repo) },
     cb = function(response)
       local issues_metadata = {}
-      local resp = vim.fn.json_decode(response)
+      local resp = vim.json.decode(response)
       for _, issue in ipairs(resp) do
         table.insert(issues_metadata, { number = issue.number, title = issue.title })
       end
@@ -309,7 +331,7 @@ function OctoBuffer:async_fetch_issues()
   }
 end
 
----Saves the Octo buffer and syncs all the comments/title/body with GitHub
+---Syncs all the comments/title/body with GitHub
 function OctoBuffer:save()
   local bufnr = vim.api.nvim_get_current_buf()
 
@@ -325,7 +347,7 @@ function OctoBuffer:save()
   for _, comment_metadata in ipairs(self.commentsMetadata) do
     if comment_metadata.body ~= comment_metadata.savedBody then
       if comment_metadata.id == -1 then
-        -- we use -1 as a placeholder for new comments
+        -- we use -1 as an indicator for new comments for which we dont currently have a GH id
         if comment_metadata.kind == "IssueComment" then
           self:do_add_issue_comment(comment_metadata)
         elseif comment_metadata.kind == "PullRequestReviewComment" then
@@ -377,7 +399,7 @@ function OctoBuffer:do_save_title_and_body()
         if stderr and not utils.is_blank(stderr) then
           vim.api.nvim_err_writeln(stderr)
         elseif output then
-          local resp = vim.fn.json_decode(output)
+          local resp = vim.json.decode(output)
           local obj
           if self:isPullRequest() then
             obj = resp.data.updatePullRequest.pullRequest
@@ -396,8 +418,8 @@ function OctoBuffer:do_save_title_and_body()
             self.bodyMetadata = desc_metadata
           end
 
-          self:render_signcolumn()
-          utils.notify("Saved!", 1)
+          self:render_signs()
+          utils.info "Saved!"
         end
       end,
     }
@@ -415,10 +437,10 @@ function OctoBuffer:do_add_issue_comment(comment_metadata)
       if stderr and not utils.is_blank(stderr) then
         vim.api.nvim_err_writeln(stderr)
       elseif output then
-        local resp = vim.fn.json_decode(output)
+        local resp = vim.json.decode(output)
         local respBody = resp.data.addComment.commentEdge.node.body
         local respId = resp.data.addComment.commentEdge.node.id
-        if vim.fn.trim(comment_metadata.body) == vim.fn.trim(respBody) then
+        if utils.trim(comment_metadata.body) == utils.trim(respBody) then
           local comments = self.commentsMetadata
           for i, c in ipairs(comments) do
             if tonumber(c.id) == -1 then
@@ -428,7 +450,7 @@ function OctoBuffer:do_add_issue_comment(comment_metadata)
               break
             end
           end
-          self:render_signcolumn()
+          self:render_signs()
         end
       end
     end,
@@ -450,10 +472,10 @@ function OctoBuffer:do_add_thread_comment(comment_metadata)
       if stderr and not utils.is_blank(stderr) then
         vim.api.nvim_err_writeln(stderr)
       elseif output then
-        local resp = vim.fn.json_decode(output)
+        local resp = vim.json.decode(output)
         local resp_comment = resp.data.addPullRequestReviewComment.comment
         local comment_end
-        if vim.fn.trim(comment_metadata.body) == vim.fn.trim(resp_comment.body) then
+        if utils.trim(comment_metadata.body) == utils.trim(resp_comment.body) then
           local comments = self.commentsMetadata
           for i, c in ipairs(comments) do
             if tonumber(c.id) == -1 then
@@ -471,7 +493,7 @@ function OctoBuffer:do_add_thread_comment(comment_metadata)
             review:update_threads(threads)
           end
 
-          self:render_signcolumn()
+          self:render_signs()
 
           -- update thread map
           local thread_id
@@ -511,15 +533,19 @@ function OctoBuffer:do_add_thread_comment(comment_metadata)
 end
 
 ---Adds a new review comment thread to the current review.
+---@return nil
 function OctoBuffer:do_add_new_thread(comment_metadata)
   --TODO: How to create a new thread on a line where there is already one
 
   local review = require("octo.reviews").get_current_review()
+  if not review then
+    return
+  end
   local layout = review.layout
   local pr = review.pull_request
-  local file = layout:cur_file()
+  local file = layout:get_current_file()
   if not file then
-    utils.notify("No file selected", 1)
+    utils.error "No file selected"
     return
   end
   local review_level = review:get_level()
@@ -558,35 +584,51 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
         if stderr and not utils.is_blank(stderr) then
           vim.api.nvim_err_writeln(stderr)
         elseif output then
-          local resp = vim.fn.json_decode(output).data.addPullRequestReviewThread
-          if not utils.is_blank(resp.thread) then
-            local new_comment = resp.thread.comments.nodes[1]
-            if vim.fn.trim(comment_metadata.body) == vim.fn.trim(new_comment.body) then
-              local comments = self.commentsMetadata
-              for i, c in ipairs(comments) do
-                if tonumber(c.id) == -1 then
-                  comments[i].id = new_comment.id
-                  comments[i].savedBody = new_comment.body
-                  comments[i].dirty = false
-                  break
-                end
-              end
-              local threads = resp.thread.pullRequest.reviewThreads.nodes
-              if review then
-                review:update_threads(threads)
-              end
-              self:render_signcolumn()
-            end
-          else
-            utils.notify("Failed to create thread", 2)
+          local resp = vim.json.decode(output).data.addPullRequestReviewThread
+
+          if utils.is_blank(resp) then
+            utils.error "Failed to create thread"
             return
+          end
+
+          -- Register new thread id
+          local threads = self.threadsMetadata
+          local new_thread = nil
+          for _, t in pairs(threads) do
+            if tonumber(t.threadId) == -1 then
+              new_thread = t
+              break
+            end
+          end
+
+          -- Register new comment data
+          local new_comment = resp.thread.comments.nodes[1]
+          if new_thread then
+            new_thread.threadId = resp.thread.id
+            new_thread.replyTo = new_comment.id
+          end
+          if utils.trim(comment_metadata.body) == utils.trim(new_comment.body) then
+            local comments = self.commentsMetadata
+            for i, c in ipairs(comments) do
+              if tonumber(c.id) == -1 then
+                comments[i].id = new_comment.id
+                comments[i].savedBody = new_comment.body
+                comments[i].dirty = false
+                break
+              end
+            end
+            local threads = resp.thread.pullRequest.reviewThreads.nodes
+            if review then
+              review:update_threads(threads)
+            end
+            self:render_signs()
           end
         end
       end,
     }
   elseif review_level == "COMMIT" then
     if isMultiline then
-      utils.notify("Can't create a multiline comment at the commit level", 2)
+      utils.error "Can't create a multiline comment at the commit level"
       return
     else
       -- get the line number the comment is on
@@ -655,10 +697,10 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
           if stderr and not utils.is_blank(stderr) then
             vim.api.nvim_err_writeln(stderr)
           elseif output then
-            local r = vim.fn.json_decode(output)
+            local r = vim.json.decode(output)
             local resp = r.data.addPullRequestReviewComment
             if not utils.is_blank(resp.comment) then
-              if vim.fn.trim(comment_metadata.body) == vim.fn.trim(resp.comment.body) then
+              if utils.trim(comment_metadata.body) == utils.trim(resp.comment.body) then
                 local comments = self.commentsMetadata
                 for i, c in ipairs(comments) do
                   if tonumber(c.id) == -1 then
@@ -672,10 +714,10 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
                   local threads = resp.comment.pullRequest.reviewThreads.nodes
                   review:update_threads(threads)
                 end
-                self:render_signcolumn()
+                self:render_signs()
               end
             else
-              utils.notify("Failed to create thread", 2)
+              utils.error "Failed to create thread"
               return
             end
           end
@@ -689,7 +731,7 @@ end
 function OctoBuffer:do_add_pull_request_comment(comment_metadata)
   local current_review = require("octo.reviews").get_current_review()
   if not utils.is_blank(current_review) then
-    utils.notify("Please submit or discard the current review before adding a comment", 2)
+    utils.error "Please submit or discard the current review before adding a comment"
     return
   end
   gh.run {
@@ -706,12 +748,11 @@ function OctoBuffer:do_add_pull_request_comment(comment_metadata)
     headers = { "Accept: application/vnd.github.v3+json" },
     cb = function(output, stderr)
       if not utils.is_blank(stderr) then
-        utils.notify(stderr, 2)
+        utils.error(stderr)
       elseif output then
-        local resp = vim.fn.json_decode(output)
-        print(vim.inspect(resp))
+        local resp = vim.json.decode(output)
         if not utils.is_blank(resp) then
-          if vim.fn.trim(comment_metadata.body) == vim.fn.trim(resp.body) then
+          if utils.trim(comment_metadata.body) == utils.trim(resp.body) then
             local comments = self.commentsMetadata
             for i, c in ipairs(comments) do
               if tonumber(c.id) == -1 then
@@ -721,10 +762,10 @@ function OctoBuffer:do_add_pull_request_comment(comment_metadata)
                 break
               end
             end
-            self:render_signcolumn()
+            self:render_signs()
           end
         else
-          utils.notify("Failed to create thread", 2)
+          utils.error "Failed to create thread"
           return
         end
       end
@@ -749,7 +790,7 @@ function OctoBuffer:do_update_comment(comment_metadata)
       if stderr and not utils.is_blank(stderr) then
         vim.api.nvim_err_writeln(stderr)
       elseif output then
-        local resp = vim.fn.json_decode(output)
+        local resp = vim.json.decode(output)
         local resp_comment
         if comment_metadata.kind == "IssueComment" then
           resp_comment = resp.data.updateIssueComment.issueComment
@@ -764,7 +805,7 @@ function OctoBuffer:do_update_comment(comment_metadata)
         elseif comment_metadata.kind == "PullRequestReview" then
           resp_comment = resp.data.updatePullRequestReview.pullRequestReview
         end
-        if resp_comment and vim.fn.trim(comment_metadata.body) == vim.fn.trim(resp_comment.body) then
+        if resp_comment and utils.trim(comment_metadata.body) == utils.trim(resp_comment.body) then
           local comments = self.commentsMetadata
           for i, c in ipairs(comments) do
             if c.id == comment_metadata.id then
@@ -773,7 +814,7 @@ function OctoBuffer:do_update_comment(comment_metadata)
               break
             end
           end
-          self:render_signcolumn()
+          self:render_signs()
         end
       end
     end,
@@ -795,25 +836,24 @@ function OctoBuffer:update_metadata()
   end
 
   for _, metadata in ipairs(metadata_objs) do
-    local mark = vim.api.nvim_buf_get_extmark_by_id(
-      self.bufnr,
-      constants.OCTO_COMMENT_NS,
-      metadata.extmark,
-      { details = true }
-    )
+    local mark =
+      vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, metadata.extmark, { details = true })
     local start_line, end_line, text = utils.get_extmark_region(self.bufnr, mark)
     metadata.body = text
     metadata.startLine = start_line
     metadata.endLine = end_line
-    metadata.dirty = vim.fn.trim(metadata.body) ~= vim.fn.trim(metadata.savedBody) and true or false
+    metadata.dirty = utils.trim(metadata.body) ~= utils.trim(metadata.savedBody) and true or false
   end
 end
 
----Renders the signcolumn
-function OctoBuffer:render_signcolumn()
-  if not self.ready then
+---Renders the signs in the signcolumn or statuscolumn
+function OctoBuffer:render_signs()
+  local use_signcolumn = config.values.ui.use_signcolumn
+  local use_statuscolumn = config.values.ui.use_statuscolumn
+  if not self.ready or (not use_statuscolumn and not use_signcolumn) then
     return
   end
+
   local issue_dirty = false
 
   -- update comment metadata (lines, etc.)
@@ -899,7 +939,7 @@ end
 ---Gets the PR object for the current octo buffer
 function OctoBuffer:get_pr()
   if not self:isPullRequest() then
-    utils.notify("Not in a PR buffer", 2)
+    utils.error "Not in a PR buffer"
     return
   end
 
@@ -909,6 +949,8 @@ function OctoBuffer:get_pr()
   return PullRequest:new {
     bufnr = bufnr,
     repo = self.repo,
+    head_repo = self.node.headRepository.nameWithOwner,
+    head_ref_name = self.node.headRefName,
     number = self.number,
     id = self.node.id,
     left = Rev:new(self.node.baseRefOid),
@@ -926,12 +968,8 @@ end
 --- Get a issue/PR comment at a given line (if any)
 function OctoBuffer:get_comment_at_line(line)
   for _, comment in ipairs(self.commentsMetadata) do
-    local mark = vim.api.nvim_buf_get_extmark_by_id(
-      self.bufnr,
-      constants.OCTO_COMMENT_NS,
-      comment.extmark,
-      { details = true }
-    )
+    local mark =
+      vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
     local start_line = mark[1] + 1
     local end_line = mark[3]["end_row"] + 1
     if start_line + 1 <= line and end_line - 2 >= line then
@@ -946,12 +984,8 @@ end
 function OctoBuffer:get_body_at_cursor()
   local cursor = vim.api.nvim_win_get_cursor(0)
   local metadata = self.bodyMetadata
-  local mark = vim.api.nvim_buf_get_extmark_by_id(
-    self.bufnr,
-    constants.OCTO_COMMENT_NS,
-    metadata.extmark,
-    { details = true }
-  )
+  local mark =
+    vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, metadata.extmark, { details = true })
   local start_line = mark[1] + 1
   local end_line = mark[3]["end_row"] + 1
   if start_line + 1 <= cursor[1] and end_line - 2 >= cursor[1] then
@@ -1012,12 +1046,8 @@ function OctoBuffer:update_reactions_at_cursor(reaction_groups, reaction_line)
 
   local comments = self.commentsMetadata
   for i, comment in ipairs(comments) do
-    local mark = vim.api.nvim_buf_get_extmark_by_id(
-      self.bufnr,
-      constants.OCTO_COMMENT_NS,
-      comment.extmark,
-      { details = true }
-    )
+    local mark =
+      vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
     local start_line = mark[1] + 1
     local end_line = mark[3].end_row + 1
     if start_line <= cursor[1] and end_line >= cursor[1] then

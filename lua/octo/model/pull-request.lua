@@ -3,8 +3,13 @@ local gh = require "octo.gh"
 
 local M = {}
 
+---https://docs.github.com/en/graphql/reference/enums#fileviewedstate
+---@alias ViewedState "DISMISSED" | "VIEWED" | "UNVIEWED"
+
 ---@class PullRequest
 ---@field repo string
+---@field head_repo string
+---@field head_ref_name string
 ---@field owner string
 ---@field name string
 ---@field number integer
@@ -14,7 +19,7 @@ local M = {}
 ---@field right Rev
 ---@field local_right boolean
 ---@field local_left boolean
----@field files table
+---@field files {[string]: ViewedState}
 ---@field diff string
 local PullRequest = {}
 PullRequest.__index = PullRequest
@@ -23,8 +28,9 @@ PullRequest.__index = PullRequest
 ---@return PullRequest
 function PullRequest:new(opts)
   local this = {
-    -- TODO: rename to nwo
     repo = opts.repo,
+    head_repo = opts.head_repo,
+    head_ref_name = opts.head_ref_name,
     number = opts.number,
     owner = "",
     name = "",
@@ -57,15 +63,26 @@ end
 
 M.PullRequest = PullRequest
 
----Fetch the diff of the PR
+local function merge_pages(data)
+  local out = {}
+  for _, page in ipairs(data) do
+    for _, item in ipairs(page) do
+      table.insert(out, item)
+    end
+  end
+  return out
+end
+
+--- Fetch the diff of the PR
+--- @param pr PullRequest
 function PullRequest:get_diff(pr)
   local url = string.format("repos/%s/pulls/%d", pr.repo, pr.number)
   gh.run {
-    args = { "api", url },
+    args = { "api", "--paginate", url },
     headers = { "Accept: application/vnd.github.v3.diff" },
     cb = function(output, stderr)
       if stderr and not utils.is_blank(stderr) then
-        utils.notify(stderr, 2)
+        utils.error(stderr)
       elseif output then
         pr.diff = output
       end
@@ -74,16 +91,18 @@ function PullRequest:get_diff(pr)
 end
 
 ---Fetch the changed files for a given PR
+---@param callback fun(files: FileEntry[]): nil
 function PullRequest:get_changed_files(callback)
   local url = string.format("repos/%s/pulls/%d/files", self.repo, self.number)
   gh.run {
-    args = { "api", "--paginate", url, "--jq", "." },
+    args = { "api", "--paginate", url, "--slurp" },
     cb = function(output, stderr)
       if stderr and not utils.is_blank(stderr) then
-        utils.notify(stderr, 2)
+        utils.error(stderr)
       elseif output then
         local FileEntry = require("octo.reviews.file-entry").FileEntry
-        local results = vim.fn.json_decode(output)
+        local results = vim.json.decode(output)
+        results = merge_pages(results)
         local files = {}
         for _, result in ipairs(results) do
           local entry = FileEntry:new {
@@ -110,13 +129,14 @@ end
 function PullRequest:get_commit_changed_files(rev, callback)
   local url = string.format("repos/%s/commits/%s", self.repo, rev.commit)
   gh.run {
-    args = { "api", "--paginate", url, "--jq", "." },
+    args = { "api", "--paginate", url, "--slurp" },
     cb = function(output, stderr)
       if stderr and not utils.is_blank(stderr) then
-        utils.notify(stderr, 2)
+        utils.error(stderr)
       elseif output then
         local FileEntry = require("octo.reviews.file-entry").FileEntry
-        local results = vim.fn.json_decode(output)
+        local results = vim.json.decode(output)
+        results = merge_pages(results)
         local files = {}
         if results.files then
           for _, result in ipairs(results.files) do

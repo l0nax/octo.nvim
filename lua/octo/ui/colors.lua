@@ -1,4 +1,5 @@
 local config = require "octo.config"
+local vim = vim
 
 local M = {}
 
@@ -21,7 +22,7 @@ local function get_fg(hl_group_name)
 end
 
 local function get_colors()
-  local conf = config.get_config()
+  local conf = config.values
   return conf.colors
 end
 
@@ -63,6 +64,7 @@ local function get_hl_groups()
     NormalFront = { fg = get_fg "Normal" or colors.white },
     Viewer = { fg = colors.black, bg = colors.blue },
     Editable = { bg = float_bg },
+    Strikethrough = { fg = colors.grey, gui = "strikethrough" },
   }
 end
 
@@ -72,10 +74,12 @@ local function get_hl_links()
     CursorLine = "CursorLine",
     VertSplit = "VertSplit",
     SignColumn = "Normal",
+    StatusColumn = "SignColumn",
     StatusLine = "StatusLine",
     StatusLineNC = "StatusLineNC",
     EndOfBuffer = "EndOfBuffer",
     FilePanelFileName = "NormalFront",
+    FilePanelSelectedFile = "Type",
     FilePanelPath = "Comment",
     StatusAdded = "OctoGreen",
     StatusUntracked = "OctoGreen",
@@ -112,6 +116,9 @@ local function get_hl_links()
 
     StateOpen = "OctoGreen",
     StateClosed = "OctoRed",
+    StateCompleted = "OctoPurple",
+    StateNotPlanned = "OctoGrey",
+    StateDraft = "OctoGrey",
     StateMerged = "OctoPurple",
     StatePending = "OctoYellow",
     StateApproved = "OctoGreen",
@@ -142,11 +149,14 @@ function M.setup()
     local fg = v.fg and " guifg=" .. v.fg or ""
     local bg = v.bg and " guibg=" .. v.bg or ""
     local gui = v.gui and " gui=" .. v.gui or ""
-    vim.cmd("hi def Octo" .. name .. fg .. bg .. gui)
+    local cmd = "hi def Octo" .. name .. fg .. bg .. gui
+    vim.cmd(cmd)
   end
 
   for from, to in pairs(get_hl_links()) do
-    vim.cmd("hi def link Octo" .. from .. " " .. to)
+    if vim.fn.hlexists("Octo" .. from) == 0 then
+      vim.cmd("hi def link Octo" .. from .. " " .. to)
+    end
   end
 end
 
@@ -173,15 +183,11 @@ local function color_is_bright(r, g, b)
 end
 
 function M.get_background_color_of_highlight_group(highlight_group_name)
-  local highlight_group = vim.api.nvim_get_hl_by_name(highlight_group_name, true)
-  local highlight_group_normal = vim.api.nvim_get_hl_by_name("Normal", true)
-  local background_color = highlight_group.background
-    or highlight_group_normal.background
-    or highlight_group_normal.foreground
+  local highlight_group = vim.api.nvim_get_hl(0, { name = highlight_group_name, link = false })
+  local highlight_group_normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  local background_color = highlight_group.bg or highlight_group_normal.bg
   if background_color then
     return string.format("#%06x", background_color)
-  else
-    return "#000000"
   end
 end
 

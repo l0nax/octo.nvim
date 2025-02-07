@@ -2,7 +2,53 @@ local entry_display = require "telescope.pickers.entry_display"
 local bubbles = require "octo.ui.bubbles"
 local utils = require "octo.utils"
 
+local vim = vim
+
 local M = {}
+
+function M.gen_from_discussions(max_number)
+  local make_display = function(entry)
+    if not entry then
+      return nil
+    end
+
+    local columns = {
+      { entry.value, "TelescopeResultsNumber" },
+      utils.get_icon(entry),
+      { entry.obj.title },
+    }
+    local layout = {
+      separator = " ",
+      items = {
+        { width = max_number },
+        { width = 2 },
+        { remaining = true },
+      },
+    }
+    local displayer = entry_display.create(layout)
+
+    return displayer(columns)
+  end
+
+  return function(obj)
+    if not obj or vim.tbl_isempty(obj) then
+      return nil
+    end
+
+    local kind = "discussion"
+    local filename = utils.get_discussion_uri(obj.number, obj.repository.nameWithOwner)
+
+    return {
+      filename = filename,
+      kind = kind,
+      value = obj.number,
+      ordinal = obj.number .. " " .. obj.title,
+      display = make_display,
+      obj = obj,
+      repo = obj.repository.nameWithOwner,
+    }
+  end
+end
 
 function M.gen_from_issue(max_number, print_repo)
   local make_display = function(entry)
@@ -28,12 +74,14 @@ function M.gen_from_issue(max_number, print_repo)
     else
       columns = {
         { entry.value, "TelescopeResultsNumber" },
+        utils.get_icon(entry),
         { entry.obj.title },
       }
       layout = {
         separator = " ",
         items = {
           { width = max_number },
+          { width = 2 },
           { remaining = true },
         },
       }
@@ -48,13 +96,26 @@ function M.gen_from_issue(max_number, print_repo)
     if not obj or vim.tbl_isempty(obj) then
       return nil
     end
-    local kind = obj.__typename == "Issue" and "issue" or "pull_request"
+
+    local kind
+    local typename = obj.__typename
+    if typename == "Issue" then
+      kind = "issue"
+    elseif typename == "PullRequest" then
+      kind = "pull_request"
+    else
+      kind = "discussion"
+    end
+
     local filename
     if kind == "issue" then
-      filename = utils.get_issue_uri(obj.repository.nameWithOwner, obj.number)
+      filename = utils.get_issue_uri(obj.number, obj.repository.nameWithOwner)
+    elseif kind == "pull_request" then
+      filename = utils.get_pull_request_uri(obj.number, obj.repository.nameWithOwner)
     else
-      filename = utils.get_pull_request_uri(obj.repository.nameWithOwner, obj.number)
+      filename = utils.get_discussion_uri(obj.number, obj.respository.nameWithOwner)
     end
+
     return {
       filename = filename,
       kind = kind,
@@ -279,6 +340,51 @@ function M.gen_from_project_card()
   end
 end
 
+function M.gen_from_milestone(title_width, show_description)
+  title_width = title_width or 10
+
+  local make_display = function(entry)
+    if not entry then
+      return nil
+    end
+
+    local columns, items
+    if show_description then
+      columns = {
+        { entry.milestone.title, "OctoDetailsLabel" },
+        { " " },
+        { entry.milestone.description },
+      }
+      items = { { width = title_width }, { width = 1 }, { remaining = true } }
+    else
+      columns = {
+        { entry.milestone.title, "OctoDetailsLabel" },
+      }
+      items = { { width = title_width } }
+    end
+
+    local displayer = entry_display.create {
+      separator = "",
+      items = items,
+    }
+
+    return displayer(columns)
+  end
+
+  return function(milestone)
+    if not milestone or vim.tbl_isempty(milestone) then
+      return nil
+    end
+
+    return {
+      value = milestone.id,
+      ordinal = milestone.title,
+      display = make_display,
+      milestone = milestone,
+    }
+  end
+end
+
 function M.gen_from_label()
   local make_display = function(entry)
     if not entry then
@@ -348,13 +454,25 @@ function M.gen_from_team()
 end
 
 function M.gen_from_user()
+  local function create_name(user, parens)
+    if not user.name or user.name == vim.NIL then
+      return user.login
+    end
+
+    if parens then
+      return user.login .. " (" .. user.name .. ")"
+    end
+
+    return user.login .. user.name
+  end
+
   local make_display = function(entry)
     if not entry then
       return nil
     end
 
     local columns = {
-      { entry.user.login },
+      { create_name(entry.user, true) },
     }
 
     local displayer = entry_display.create {
@@ -374,7 +492,7 @@ function M.gen_from_user()
 
     return {
       value = user.id,
-      ordinal = user.login,
+      ordinal = create_name(user, false),
       display = make_display,
       user = user,
     }
@@ -440,7 +558,7 @@ function M.gen_from_repo(max_nameWithOwner, max_forkCount, max_stargazerCount)
       value = repo.nameWithOwner,
       ordinal = repo.nameWithOwner .. " " .. repo.description,
       display = make_display,
-      repo = repo.nameWithOwner,
+      repo = repo,
     }
   end
 end
@@ -502,7 +620,7 @@ function M.gen_from_gist()
   end
 end
 
-function M.gen_from_octo_actions()
+function M.gen_from_octo_actions(width)
   local make_display = function(entry)
     if not entry then
       return nil
@@ -516,7 +634,7 @@ function M.gen_from_octo_actions()
     local displayer = entry_display.create {
       separator = "",
       items = {
-        { width = 12 },
+        { width = width },
         { remaining = true },
       },
     }
@@ -534,6 +652,109 @@ function M.gen_from_octo_actions()
       ordinal = action.object .. " " .. action.name,
       display = make_display,
       action = action,
+    }
+  end
+end
+
+function M.gen_from_notification(opts)
+  opts = opts or { show_repo_info = false }
+  local make_display = function(entry)
+    if not entry then
+      return nil
+    end
+
+    local icons = utils.icons
+
+    local columns = {
+      entry.obj.unread == true and icons.notification[entry.kind].unread or icons.notification[entry.kind].read,
+      { "#" .. (entry.obj.subject.url:match "/(%d+)$" or "NA") },
+      { string.sub(entry.obj.repository.full_name, 1, 50), "TelescopeResultsNumber" },
+      { string.sub(entry.obj.subject.title, 1, 100) },
+    }
+    local items = {
+      { width = 2 },
+      { width = 6 },
+      { width = math.min(#entry.obj.repository.full_name, 50) },
+      { width = math.min(#entry.obj.subject.title, 100) },
+    }
+
+    if not opts.show_repo_info then
+      table.remove(columns, 3)
+      table.remove(items, 3)
+    end
+
+    local displayer = entry_display.create {
+      separator = " ",
+      items = items,
+    }
+
+    return displayer(columns)
+  end
+
+  return function(notification)
+    if not notification or vim.tbl_isempty(notification) then
+      return nil
+    end
+
+    notification.kind = (function(type)
+      if type == "Issue" then
+        return "issue"
+      elseif type == "PullRequest" then
+        return "pull_request"
+      end
+      return "unknown"
+    end)(notification.subject.type)
+
+    if notification.kind == "unknown" then
+      return nil
+    end
+    local ref = notification.subject.url:match "/(%d+)$"
+
+    return {
+      value = ref,
+      ordinal = notification.subject.title .. " " .. notification.repository.full_name .. " " .. ref,
+      display = make_display,
+      obj = notification,
+      repo = notification.repository.full_name,
+      kind = notification.kind,
+      thread_id = notification.id,
+      url = notification.subject.url,
+    }
+  end
+end
+
+function M.gen_from_issue_templates()
+  local make_display = function(entry)
+    if not entry then
+      return nil
+    end
+
+    local columns = {
+      { entry.template.name, "TelescopeResultsNumber" },
+      { entry.template.about },
+    }
+
+    local displayer = entry_display.create {
+      separator = "",
+      items = {
+        { width = 25 },
+        { remaining = true },
+      },
+    }
+
+    return displayer(columns)
+  end
+
+  return function(template)
+    if not template or vim.tbl_isempty(template) then
+      return nil
+    end
+
+    return {
+      value = template.name,
+      ordinal = template.name .. " " .. template.about,
+      display = make_display,
+      template = template,
     }
   end
 end

@@ -1,26 +1,62 @@
 local OctoBuffer = require("octo.model.octo-buffer").OctoBuffer
-local gh = require "octo.gh"
-local signs = require "octo.signs"
-local constants = require "octo.constants"
+local autocmds = require "octo.autocmds"
 local config = require "octo.config"
-local utils = require "octo.utils"
-local graphql = require "octo.graphql"
-local writers = require "octo.writers"
-local window = require "octo.window"
+local constants = require "octo.constants"
+local commands = require "octo.commands"
+local completion = require "octo.completion"
+local folds = require "octo.folds"
+local gh = require "octo.gh"
+local graphql = require "octo.gh.graphql"
+local picker = require "octo.picker"
 local reviews = require "octo.reviews"
-local colors = require "octo.colors"
-require "octo.completion"
-require "octo.folds"
+local signs = require "octo.ui.signs"
+local window = require "octo.ui.window"
+local writers = require "octo.ui.writers"
+local utils = require "octo.utils"
+local vim = vim
 
 _G.octo_repo_issues = {}
 _G.octo_buffers = {}
+_G.octo_colors_loaded = false
 
 local M = {}
 
 function M.setup(user_config)
+  if not vim.fn.has "nvim-0.7" then
+    utils.error "octo.nvim requires neovim 0.7+"
+    return
+  end
+
   config.setup(user_config or {})
+  if not vim.fn.executable(config.values.gh_cmd) then
+    utils.error("gh executable not found using path: " .. config.values.gh_cmd)
+    return
+  end
+
   signs.setup()
-  colors.setup()
+  picker.setup()
+  completion.setup()
+  folds.setup()
+  autocmds.setup()
+  commands.setup()
+  gh.setup()
+end
+
+function M.update_layout_for_current_file()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local thisfile = vim.api.nvim_buf_get_name(bufnr)
+  local relative_path = vim.fn.fnamemodify(thisfile, ":~:.")
+  local review = reviews.get_current_review()
+  if review == nil then
+    return
+  end
+  local files = review.layout.files
+  for _, file in ipairs(files) do
+    if file.path == relative_path then
+      review.layout:set_current_file(file)
+      vim.api.nvim_set_current_win(review.layout.right_winid)
+    end
+  end
 end
 
 function M.configure_octo_buffer(bufnr)
@@ -31,7 +67,7 @@ function M.configure_octo_buffer(bufnr)
     -- review diff buffers
     local current_review = reviews.get_current_review()
     if current_review and #current_review.threads > 0 then
-      current_review.layout:cur_file():place_signs()
+      current_review.layout:get_current_file():place_signs()
     end
   elseif buffer then
     -- issue/pr/reviewthread buffers
@@ -45,8 +81,17 @@ function M.save_buffer()
   buffer:save()
 end
 
-function M.load_buffer(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+---@class ReloadOpts
+---@field bufnr number
+---@field verbose boolean
+
+--- Load issue/pr/repo buffer
+---@param opts ReloadOpts
+---@return nil
+function M.load_buffer(opts)
+  opts = opts or {}
+  local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
+  local cursor_pos = vim.api.nvim_win_get_cursor(0)
   local bufname = vim.fn.bufname(bufnr)
   local repo, kind, number = string.match(bufname, "octo://(.+)/(.+)/(%d+)")
   if not repo then
@@ -63,18 +108,35 @@ function M.load_buffer(bufnr)
     return
   end
   M.load(repo, kind, number, function(obj)
-    M.create_buffer(kind, obj, repo, false)
+    vim.api.nvim_buf_call(bufnr, function()
+      M.create_buffer(kind, obj, repo, false)
+
+      -- get size of newly created buffer
+      local lines = vim.api.nvim_buf_line_count(bufnr)
+
+      -- One to the left
+      local new_cursor_pos = {
+        math.min(cursor_pos[1], lines),
+        math.max(0, cursor_pos[2] - 1),
+      }
+      vim.api.nvim_win_set_cursor(0, new_cursor_pos)
+
+      if opts.verbose then
+        utils.info(string.format("Loaded %s/%s/%d", repo, kind, number))
+      end
+    end)
   end)
 end
 
 function M.load(repo, kind, number, cb)
   local owner, name = utils.split_repo(repo)
   local query, key
+
   if kind == "pull" then
-    query = graphql("pull_request_query", owner, name, number)
+    query = graphql("pull_request_query", owner, name, number, _G.octo_pv2_fragment)
     key = "pullRequest"
   elseif kind == "issue" then
-    query = graphql("issue_query", owner, name, number)
+    query = graphql("issue_query", owner, name, number, _G.octo_pv2_fragment)
     key = "issue"
   elseif kind == "repo" then
     query = graphql("repository_query", owner, name)
@@ -90,7 +152,7 @@ function M.load(repo, kind, number, cb)
           local obj = resp.data.repository[key]
           cb(obj)
         elseif kind == "repo" then
-          local resp = vim.fn.json_decode(output)
+          local resp = vim.json.decode(output)
           local obj = resp.data.repository
           cb(obj)
         end
@@ -99,10 +161,10 @@ function M.load(repo, kind, number, cb)
   }
 end
 
-function M.render_signcolumn()
+function M.render_signs()
   local bufnr = vim.api.nvim_get_current_buf()
   local buffer = octo_buffers[bufnr]
-  buffer:render_signcolumn()
+  buffer:render_signs()
 end
 
 function M.on_cursor_hold()
@@ -122,7 +184,7 @@ function M.on_cursor_hold()
         if stderr and not utils.is_blank(stderr) then
           vim.api.nvim_err_writeln(stderr)
         elseif output then
-          local resp = vim.fn.json_decode(output)
+          local resp = vim.json.decode(output)
           local reactions = {}
           local reactionGroups = resp.data.node.reactionGroups
           for _, reactionGroup in ipairs(reactionGroups) do
@@ -158,7 +220,7 @@ function M.on_cursor_hold()
         if stderr and not utils.is_blank(stderr) then
           vim.api.nvim_err_writeln(stderr)
         elseif output then
-          local resp = vim.fn.json_decode(output)
+          local resp = vim.json.decode(output)
           local user = resp.data.user
           local popup_bufnr = vim.api.nvim_create_buf(false, true)
           local lines, max_length = writers.write_user_profile(popup_bufnr, user)
@@ -174,14 +236,7 @@ function M.on_cursor_hold()
   end
 
   -- link popup
-  local repo, number = utils.extract_pattern_at_cursor(constants.LONG_ISSUE_PATTERN)
-  if not repo or not number then
-    repo = buffer.repo
-    number = utils.extract_pattern_at_cursor(constants.SHORT_ISSUE_PATTERN)
-  end
-  if not repo or not number then
-    repo, _, number = utils.extract_pattern_at_cursor(constants.URL_ISSUE_PATTERN)
-  end
+  local repo, number = utils.extract_issue_at_cursor(buffer.repo)
   if not repo or not number then
     return
   end
@@ -193,7 +248,7 @@ function M.on_cursor_hold()
       if stderr and not utils.is_blank(stderr) then
         vim.api.nvim_err_writeln(stderr)
       elseif output then
-        local resp = vim.fn.json_decode(output)
+        local resp = vim.json.decode(output)
         local issue = resp.data.repository.issueOrPullRequest
         local popup_bufnr = vim.api.nvim_create_buf(false, true)
         local max_length = 80
@@ -210,7 +265,7 @@ end
 
 function M.create_buffer(kind, obj, repo, create)
   if not obj.id then
-    utils.notify("Cannot find " .. repo)
+    utils.error("Cannot find " .. repo)
     return
   end
 
